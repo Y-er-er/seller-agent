@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>售后助手</title>
+  <!--
+    买家侧对话页（H5，P1.3）—— 免构建：双击本文件即可打开（file:// 协议）。
+    后端已开 CORS（见 backend/app/main.py），无需本地静态服务器。
+    入口参数：?order_id=xxx（也可在页面上手动填写）。
+
+    ⚠️ 需后端 CHAT_ENABLED=true 才可用；关闭时所有 /api/h5/* 返回 503，
+       页面会明确提示"对话入口未启用"，而不是静默无响应。
+  -->
+  <link rel="stylesheet" href="h5.css" />
+</head>
+<body>
+  <div id="h5">
+    <!-- 结构由 h5.js 渲染；此处的骨架仅在脚本未加载时可见 -->
+    <noscript>本页需要启用 JavaScript。</noscript>
+  </div>
+  <script src="h5.js"></script>
+</body>
+</html>

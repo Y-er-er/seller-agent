@@ -1,0 +1,35 @@
+# ============================================================
+# 编排与模型抽象
+# 版本经 pip install --dry-run 兼容性验证（2026-10-13，Python 3.11.15）
+# ============================================================
+langchain==1.3.0
+langchain-core>=1.0,<2.0
+langgraph==1.2.0
+langgraph-checkpoint>=4.0.0
+langgraph-checkpoint-sqlite      # M0—M3 起步用 checkpointer（SqliteSaver）
+
+# 说明：此处【不】锁定 langchain-openai==1.1.6。
+#       1.1.6 约束 openai<3.0.0，会把本环境既有的 openai 3.16.2 降级到 2.54.0；
+#       改由 langchain-deepseek 传递解析（实测得 langchain-openai 1.7.1，
+#       其约束 openai<4.0.0，与本环境 openai 3.16.2 兼容，零降级）。
+langchain-community==0.4.1       # ChatTongyi（千问）/ DashScopeEmbeddings
+langchain-deepseek==1.0.1        # DeepSeek 备用通道（会带入 langchain-openai）
+dashscope==1.22.2                # 与既有环境对齐（回退以兼容 llama-index-llms-dashscope）；视觉走 LLM_VISION_MODEL
+
+# ============================================================
+# 举证与存储
+# ============================================================
+pillow                           # 举证图片可解码性校验
+
+# ============================================================
+# 业务侧（本环境已具备，登记以固定基线）
+# ============================================================
+fastapi
+uvicorn[standard]
+pydantic>=2.0
+pydantic-settings>=2.0
+httpx
+PyMySQL
+PyYAML
+python-dotenv
+tiktoken

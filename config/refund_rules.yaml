@@ -1,0 +1,166 @@
+# ============================================================
+# 仅退款资格判定 —— 规则表
+# ------------------------------------------------------------
+# 状态：【草案 draft1】。规则语义与阈值需经确认后方可定稿。
+#
+# 约定：
+#   - priority 数值越小越优先；命中 conclusion=to_human 立即终止后续判定。
+#   - **所有业务可调阈值一律用 ${VAR} 引用 .env**（纪律 9），不在规则表内写死数值。
+#     好处：调参只改 .env 一处，不动规则表；且同一业务概念只定义一次。
+#     见 §阈值清单：SMALL_AMOUNT / MIN_CREDIT_SCORE / MAX_REFUND_RATE /
+#                  HIGH_REFUND_RATE / HIGH_REFUND_COUNT / AUTO_AMOUNT_CAP /
+#                  RESHIP_AMOUNT_CAP / REFUND_WINDOW_DAYS
+#   - 冲突消解：转人工 > 要求补证 > 自动处置（由引擎统一实现）。
+#   - 未命中任何规则 → 引擎兜底转人工（数据不足不猜测）。
+#
+# 【定稿衔接设计】R4 与 R5 的退款率门槛**取同一值**（MAX_REFUND_RATE == HIGH_REFUND_RATE）：
+#     · rate <  门槛 → R4 命中 → 自动通过
+#     · rate >= 门槛 → R5 命中 → 转人工
+#   两者**不留缝隙**，从而消除"既不能自动通过、也不被标记高风险"的无人区
+#   （曾用 0.15 / 0.30 两值，导致 0.15~0.30 区间的申请全部落兜底转人工）。
+#   边界值（rate 恰好等于门槛）两条规则同时命中，按优先级取 to_human —— 偏安全侧。
+# ============================================================
+version: "2026.10-final"
+
+rules:
+  # ---- R1 资金风险硬闸门 ----
+  # ⚠️ 运算符用 gte 而非 gt：定稿要求"金额**达到**上限即转人工并留痕"。
+  #    若用 gt，恰好等于上限的申请（如 ¥300）不会命中 R1，而会落到兜底转人工 ——
+  #    两者结论相同，但**审计里看不到 R1 留痕**，与风控意图不符。
+  - rule_id: R1
+    priority: 10
+    enabled: true
+    description: "申请金额达到自动处置上限 → 转人工（资金风险闸门）"
+    conclusion: to_human
+    condition:
+      all:
+        - {field: claim_amount, op: gte, value: "${AUTO_AMOUNT_CAP}"}
+
+  # ---- R2 小额未签收直通 ----
+  - rule_id: R2
+    priority: 20
+    enabled: true
+    description: "未签收 + 原因=未收到货 + 金额 ≤ 小额线 → 自动通过"
+    conclusion: auto_pass
+    condition:
+      all:
+        - {field: logistics_status, op: eq, value: not_signed}
+        - {field: refund_reason_code, op: eq, value: not_received}
+        - {field: claim_amount, op: lte, value: "${SMALL_AMOUNT}"}
+
+  # ---- R3 已签收却称未收到 ----
+  - rule_id: R3
+    priority: 30
+    enabled: true
+    description: "已签收却主张未收到货 → 要求补证（48h，买卖双方时限对等）"
+    conclusion: request_evidence
+    condition:
+      all:
+        - {field: logistics_status, op: eq, value: signed}
+        - {field: refund_reason_code, op: eq, value: not_received}
+
+  # ---- R4 小额高信用低退款率 ----
+  # 注意：本规则与 R2 共用同一个「小额线」变量 SMALL_AMOUNT ——
+  #   两处若各写一个数值，调整时极易漏改其中一个（历史隐患），故统一外置。
+  - rule_id: R4
+    priority: 40
+    enabled: true
+    description: "金额 ≤ 小额线 + 信用分 ≥ 门槛 + 90天退款率 ≤ 上限 → 自动通过"
+    conclusion: auto_pass
+    condition:
+      all:
+        - {field: claim_amount, op: lte, value: "${SMALL_AMOUNT}"}
+        - {field: buyer_credit_score, op: gte, value: "${MIN_CREDIT_SCORE}"}
+        - {field: buyer_refund_rate_90d, op: lte, value: "${MAX_REFUND_RATE}"}
+
+  # ---- R5 高频退款风险 ----
+  - rule_id: R5
+    priority: 50
+    enabled: true
+    description: "90天退款率 ≥ 高风险线 或 90天仅退款笔数 ≥ 笔数门槛 → 标记风险并转人工"
+    conclusion: to_human
+    condition:
+      any:
+        - {field: buyer_refund_rate_90d, op: gte, value: "${HIGH_REFUND_RATE}"}
+        - {field: refund_count_90d, op: gte, value: "${HIGH_REFUND_COUNT}"}
+
+  # ---- R6 应举证而未举证 ----
+  # 注意：此处刻意**不含** not_received——
+  #   未签收情形由物流自证；已签收却称未收到已由 R3 要求补证。
+  #   若把 not_received 纳入，会与 R2（小额未签收直通）产生结论冲突（补证 覆盖 自动通过），
+  #   破坏《开发计划书》验收题 A1 的"命中 R2 → 自动通过"预期。
+  - rule_id: R6
+    priority: 60
+    enabled: true
+    description: "应举证场景（错发/质量）但有效举证图为 0 → 要求补证"
+    conclusion: request_evidence
+    condition:
+      all:
+        - {field: image_count, op: lte, value: 0}
+        - {field: refund_reason_code, op: in, value: [wrong_item, quality]}
+
+  # ---- R7 质量主张（业务红线）----
+  - rule_id: R7
+    priority: 70
+    enabled: true
+    description: "主张质量问题 → 转人工（本方案不做质量判定）"
+    conclusion: to_human
+    condition:
+      all:
+        - {field: refund_reason_code, op: eq, value: quality}
+
+  # ---- R8 数据不足兜底 ----
+  - rule_id: R8
+    priority: 80
+    enabled: true
+    description: "关键事实缺失（订单或物流未取到）→ 转人工"
+    conclusion: to_human
+    condition:
+      any:
+        - {field: has_order, op: is_false}
+        - {field: has_logistics, op: is_false}
+
+  # ---- R9 补发通过（诉求=补发，第一步新增）----
+  # 「错发/漏发 + 有举证 + 诉求是补发 + 金额低于补发上限」→ 自动通过。
+  # 结论仍落 auto_pass，由处置层（resolve_disposal）按 claim_type=reship 映射为「补发」。
+  # ⚠️ 必须「有举证」（image_count ≥ 1）：无图的错发/漏发由 R6 先要求补证，避免审计里 R9 误命中。
+  - rule_id: R9
+    priority: 35
+    enabled: true
+    description: "诉求=补发 + 错发/漏发 + 有举证 + 金额低于补发上限 → 自动通过（处置=补发）"
+    conclusion: auto_pass
+    condition:
+      all:
+        - {field: claim_intent, op: eq, value: reship}
+        - {field: refund_reason_code, op: in, value: [wrong_item]}
+        - {field: image_count, op: gte, value: 1}
+        - {field: claim_amount, op: lt, value: "${RESHIP_AMOUNT_CAP}"}
+
+  # ---- R10 补发超限转人工（诉求=补发，第一步新增）----
+  # ⚠️ 与 R1 同口径：金额**达到**补发上限即转人工（gte），避免"等于上限"落兜底。
+  - rule_id: R10
+    priority: 15
+    enabled: true
+    description: "诉求=补发 + 金额达到补发上限 → 转人工（资金风险闸门）"
+    conclusion: to_human
+    condition:
+      all:
+        - {field: claim_intent, op: eq, value: reship}
+        - {field: claim_amount, op: gte, value: "${RESHIP_AMOUNT_CAP}"}
+
+  # ---- R11 超售后时效拒绝（第二步新增）----
+  # 语义（用户定义 2026-10-15）：核实后买家理由不合理/有误 → 拒绝（驳回请求）。
+  # 「已签收 + 签收后超过售后时效 + 非质量原因」→ 拒绝。
+  # ⚠️ 质量原因被 `ne` 排除：质量超时效仍走 R7 转人工（涉及质保责任，红线不动）。
+  # 优先级 25 落在 R2(20) 与 R3(30) 之间：超时效 + 称未收到 同时命中 R11/R3 时，
+  # 结论取 auto_reject（优先级 2 > request_evidence 1）→ 直接拒绝，而非再补证。
+  - rule_id: R11
+    priority: 25
+    enabled: true
+    description: "已签收 + 超售后时效 + 非质量原因 → 拒绝"
+    conclusion: auto_reject
+    condition:
+      all:
+        - {field: logistics_status, op: eq, value: signed}
+        - {field: days_since_signed, op: gte, value: "${REFUND_WINDOW_DAYS}"}
+        - {field: refund_reason_code, op: ne, value: quality}

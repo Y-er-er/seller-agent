@@ -1,0 +1,318 @@
+/* ============================================================
+   买家侧对话页（H5）样式 —— 移动端优先 · 浅色主题
+   独立于工作台 styles.css（不复用、不覆盖），便于单独下线与灰度。
+   ============================================================ */
+
+:root {
+  --bg: #f4f5f7;
+  --card: #ffffff;
+  --line: #e4e6eb;
+  --text: #1f2329;
+  --muted: #8a9099;
+  --brand: #2563eb;
+  --brand-soft: #eef3ff;
+  --warn: #b45309;
+  --warn-bg: #fff7e6;
+  --danger: #b91c1c;
+  --danger-bg: #fef2f2;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  display: flex;
+  justify-content: center;
+}
+
+/* 手机视口内居中；桌面下限制宽度模拟手机 */
+#h5 {
+  width: 100%;
+  max-width: 480px;
+  min-height: 100vh;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+}
+
+/* ---------- 顶栏 ---------- */
+.h5-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  padding: 12px 14px 8px;
+}
+
+.h5-header h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.h5-header .sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* 轮数进度条：低干扰，只在接近上限时变色 */
+.round-bar {
+  margin-top: 8px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.round-bar > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--brand);
+  transition: width .25s ease;
+}
+
+.round-bar.is-warn > i { background: var(--warn); }
+.round-bar.is-full > i { background: var(--danger); }
+
+/* ---------- 订单卡片 ---------- */
+.order-card {
+  margin: 12px 14px 0;
+  padding: 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.order-card .title {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.order-card .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  padding: 3px 0;
+}
+
+.order-card .row .k { color: var(--muted); }
+.order-card .row .v { font-weight: 600; }
+
+/* ---------- 消息区 ---------- */
+.messages {
+  flex: 1;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+.msg { display: flex; }
+.msg.agent { justify-content: flex-start; }
+.msg.buyer { justify-content: flex-end; }
+
+.bubble {
+  max-width: 82%;
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg.agent .bubble {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-top-left-radius: 4px;
+}
+
+.msg.buyer .bubble {
+  background: var(--brand);
+  color: #fff;
+  border-top-right-radius: 4px;
+}
+
+.msg.system .bubble {
+  background: transparent;
+  border: 1px dashed var(--line);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* 金额卡片（结构化结论，避免只靠一段文字） */
+.amount-card {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--brand-soft);
+  border: 1px solid #d6e2ff;
+  border-radius: 10px;
+}
+
+.amount-card .label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.amount-card .value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--brand);
+  margin-top: 2px;
+}
+
+/* 判定依据折叠区：默认收起，"结论可解释但不过载" */
+.basis {
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.basis summary {
+  cursor: pointer;
+  color: var(--brand);
+  list-style: none;
+}
+
+.basis summary::-webkit-details-marker { display: none; }
+
+.basis ol {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+/* 快捷选项 */
+.quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.quick button {
+  border: 1px solid var(--brand);
+  background: #fff;
+  color: var(--brand);
+  border-radius: 16px;
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.quick button:active { background: var(--brand-soft); }
+
+/* 打字光标（分段推送时的视觉反馈） */
+.caret::after {
+  content: "▍";
+  color: var(--brand);
+  animation: blink 1s steps(1) infinite;
+}
+
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ---------- 提示条 ---------- */
+.tips { padding: 0 14px; }
+
+.tip {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  border: 1px solid;
+}
+
+.tip.warn { background: var(--warn-bg); border-color: #ffe1a8; color: var(--warn); }
+.tip.danger { background: var(--danger-bg); border-color: #fecaca; color: var(--danger); }
+.tip.info { background: var(--brand-soft); border-color: #d6e2ff; color: var(--brand); }
+
+/* ---------- 输入区 ---------- */
+.composer {
+  position: sticky;
+  bottom: 0;
+  background: var(--card);
+  border-top: 1px solid var(--line);
+  padding: 10px 14px 12px;
+}
+
+.composer .row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.composer textarea {
+  flex: 1;
+  resize: none;
+  min-height: 42px;
+  max-height: 120px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font: inherit;
+  outline: none;
+  background: #fbfbfc;
+}
+
+.composer textarea:focus { border-color: var(--brand); background: #fff; }
+
+.composer .toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.composer .counter.over { color: var(--danger); font-weight: 600; }
+
+.btn {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.btn.primary { background: var(--brand); color: #fff; }
+.btn.primary:disabled { background: #c9d4ea; cursor: not-allowed; }
+.btn.ghost {
+  background: #fff;
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.btn.ghost:active { background: var(--bg); }
+
+/* 上传附件标签 */
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 4px 10px;
+  border-radius: 14px;
+  background: var(--brand-soft);
+  border: 1px solid #d6e2ff;
+  color: var(--brand);
+  font-size: 12.5px;
+}
+
+.hidden { display: none !important; }

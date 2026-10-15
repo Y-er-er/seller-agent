@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>买家侧售后对话页 · 原型 v1</title>
+<!--
+  ============================================================
+  买家侧 H5 原型（设计评审用）
+
+  ⚠️ 本文件是**原型**，用途只有一个：让评审者**点着看**页面的信息架构与状态表现。
+     它 **不连后端**、**不产生任何请求**、**不写任何数据**。
+
+  与正式实现的关系：
+     · 结构（分区 / 状态清单 / 卡片字段）按《H5买家侧前端设计_v1.md》逐条对应；
+     · 视觉令牌（颜色 / 字号 / 圆角）与设计文档 §4.3 一致；
+     · 正式实现**不复制本文件的代码**——正式版会复用现有 h5.js 的工程骨架
+       （单一 api() 出口 / 纯函数渲染 / 可离线验证），并按设计文档重写信息架构。
+
+  左侧「原型控件」可切换 11 个状态，覆盖设计文档 §4.2 的状态清单。
+  ============================================================
+-->
+<style>
+  :root{
+    --brand:#2563eb; --brand-soft:#eef3ff; --bg:#f4f5f7; --card:#fff;
+    --line:#e4e6eb; --text:#1f2329; --muted:#8a9099;
+    --warn:#b45309; --warn-bg:#fff7e6; --danger:#b91c1c; --danger-bg:#fef2f2;
+    --ok:#15803d; --ok-bg:#f0fdf4; --radius:12px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:#eceef1; color:var(--text);
+    font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",Arial,sans-serif;
+  }
+  .stage{display:flex;justify-content:center;align-items:flex-start;gap:20px;padding:20px;min-height:100vh}
+
+  /* ---------- 原型控件（不属于产品页面） ---------- */
+  .panel{
+    width:250px;flex:0 0 250px;background:#fff;border:1px solid var(--line);
+    border-radius:14px;padding:14px;position:sticky;top:20px;
+  }
+  .panel h2{margin:0 0 2px;font-size:15px}
+  .panel .sub{font-size:11.5px;color:var(--muted);margin-bottom:10px}
+  .panel .warnbox{background:var(--warn-bg);border:1px solid #ffe1a8;color:var(--warn);
+    border-radius:8px;padding:6px 8px;font-size:11.5px;margin-bottom:10px}
+  .state-list{display:flex;flex-direction:column;gap:4px}
+  .state-list button{
+    text-align:left;border:1px solid var(--line);background:#fbfbfc;border-radius:8px;
+    padding:7px 9px;font-size:12.5px;cursor:pointer;color:var(--text);
+  }
+  .state-list button:hover{border-color:#c9d4ea}
+  .state-list button.on{background:var(--brand-soft);border-color:var(--brand);color:var(--brand);font-weight:600}
+  .panel .note{margin-top:12px;font-size:11.5px;color:var(--muted);line-height:1.5}
+  .panel .note b{color:var(--text)}
+
+  /* ---------- 手机视口 ---------- */
+  .phone{
+    width:390px;flex:0 0 390px;height:780px;background:var(--bg);
+    border:1px solid var(--line);border-radius:22px;overflow:hidden;
+    display:flex;flex-direction:column;box-shadow:0 8px 30px rgba(0,0,0,.08);
+  }
+
+  /* ---------- 顶栏 ---------- */
+  .hd{background:var(--card);border-bottom:1px solid var(--line);padding:11px 14px 9px;flex:0 0 auto}
+  .hd .row1{display:flex;align-items:center;gap:8px}
+  .hd .back{font-size:17px;color:var(--muted);line-height:1}
+  .hd h1{margin:0;font-size:16px;font-weight:600;flex:1}
+  .badge{font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid;white-space:nowrap}
+  .badge.run{background:var(--brand-soft);border-color:#d6e2ff;color:var(--brand)}
+  .badge.done{background:#f3f4f6;border-color:var(--line);color:var(--muted)}
+  .badge.human{background:var(--warn-bg);border-color:#ffe1a8;color:var(--warn)}
+  .badge.err{background:var(--danger-bg);border-color:#fecaca;color:var(--danger)}
+
+  /* 阶段进度 */
+  .steps{display:flex;align-items:center;gap:0;margin-top:9px}
+  .step{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0}
+  .step .dot{width:9px;height:9px;border-radius:50%;background:var(--line);border:1px solid var(--line)}
+  .step .lb{font-size:10px;color:var(--muted);white-space:nowrap;transform:scale(.96)}
+  .step.done .dot{background:var(--brand);border-color:var(--brand)}
+  .step.now .dot{background:#fff;border:2px solid var(--brand);width:11px;height:11px;animation:pulse 1.2s infinite}
+  .step.done .lb,.step.now .lb{color:var(--brand)}
+  .track{height:1px;background:var(--line);flex:0 0 6px}
+  @keyframes pulse{50%{opacity:.35}}
+
+  /* ---------- 滚动区 ---------- */
+  .body{flex:1 1 auto;overflow-y:auto;padding:12px 14px 4px}
+
+  /* 订单卡 */
+  .ordercard{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:11px 12px;margin-bottom:12px}
+  .ordercard .t{font-size:11.5px;color:var(--muted);margin-bottom:6px;display:flex;justify-content:space-between}
+  .ordercard .t button{border:none;background:none;color:var(--brand);font-size:11.5px;cursor:pointer;padding:0}
+  .ordercard .row{display:flex;justify-content:space-between;gap:10px;font-size:13.5px;padding:2px 0}
+  .ordercard .row .k{color:var(--muted);flex:0 0 auto}
+  .ordercard .row .v{font-weight:600;text-align:right;word-break:break-all}
+  .ordercard.folded .row{display:none}
+
+  /* 消息 */
+  .msg{display:flex;margin-bottom:10px}
+  .msg.agent{justify-content:flex-start}
+  .msg.buyer{justify-content:flex-end}
+  .msg.sys{justify-content:center}
+  .bubble{max-width:82%;padding:9px 12px;border-radius:var(--radius);white-space:pre-wrap;word-break:break-word;font-size:14px}
+  .msg.agent .bubble{background:var(--card);border:1px solid var(--line);border-top-left-radius:4px}
+  .msg.buyer .bubble{background:var(--brand);color:#fff;border-top-right-radius:4px}
+  .msg.sys .bubble{background:transparent;border:1px dashed var(--line);color:var(--muted);font-size:11.5px}
+  .msg .failed{display:block;margin-top:5px;font-size:11.5px;color:#fecaca}
+  .msg .failed button{background:none;border:1px solid #fecaca;color:#fff;border-radius:6px;
+    font-size:11px;padding:1px 7px;margin-left:6px;cursor:pointer}
+  .time{text-align:center;font-size:11px;color:var(--muted);margin:6px 0 10px}
+
+  /* 上传缩略图 */
+  .thumbs{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .thumb{width:58px;height:58px;border-radius:8px;background:linear-gradient(135deg,#dbe4f5,#eef3ff);
+    border:1px solid #d6e2ff;display:flex;align-items:center;justify-content:center;
+    font-size:18px;position:relative;overflow:hidden}
+  .thumb.uploading::after{content:"";position:absolute;left:0;bottom:0;height:3px;width:60%;background:var(--brand)}
+  .thumb.err{border-color:#fecaca;background:var(--danger-bg)}
+  .thumb .retry{position:absolute;inset:auto 0 0 0;background:var(--danger);color:#fff;font-size:9px;
+    text-align:center;padding:1px 0}
+
+  /* 卡片（结论 / 追问） */
+  .card{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--brand);
+    border-radius:var(--radius);padding:11px 12px;margin:-2px 0 10px 0}
+  .card.ask{border-left-color:var(--warn)}
+  .card.err{border-left-color:var(--danger)}
+  .card .ct{font-size:15px;font-weight:600;display:flex;align-items:center;gap:6px}
+  .card .amt{font-size:24px;font-weight:700;color:var(--brand);margin:4px 0 0;letter-spacing:.5px}
+  .card .amt small{font-size:11.5px;color:var(--muted);font-weight:400;display:block;letter-spacing:0}
+  .card .line{font-size:13px;color:#3d434d;margin-top:6px}
+  .card .line .k{color:var(--muted)}
+  .card details{margin-top:8px;font-size:12.5px}
+  .card details summary{color:var(--brand);cursor:pointer;list-style:none}
+  .card details summary::-webkit-details-marker{display:none}
+  .card details ol{margin:6px 0 0;padding-left:18px;color:#4b5158}
+  .card .disclaim{font-size:11px;color:var(--muted);margin-top:8px;padding-top:7px;border-top:1px dashed var(--line)}
+  .card .why{font-size:12.5px;color:var(--warn);margin-top:6px}
+  .card.confirm{border-left-color:#7c3aed}
+  .card.conflict{border-left-color:var(--danger)}
+  .card.escalate{border-left-color:var(--warn)}
+  .card .acts{display:flex;gap:8px;margin-top:9px}
+  .card .acts button{border:1px solid var(--brand);background:#fff;color:var(--brand);
+    border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer}
+  .card .acts button.solid{background:var(--brand);color:#fff}
+
+  /* 动作日志（F0：智能体可见性）——最轻的视觉，不与结论卡抢注意力 */
+  .actionlog{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    padding:9px 12px;font-size:12.5px;color:var(--muted);max-width:82%}
+  .actionlog .act{display:flex;align-items:center;gap:7px;padding:2px 0}
+  .actionlog .act i{width:5px;height:5px;border-radius:50%;background:#c9d4ea;flex:0 0 auto}
+  .actionlog .act.pending{color:var(--brand)}
+  .actionlog .act.pending i{background:var(--brand);animation:pulse 1.2s infinite}
+  .actionlog .act .res{color:var(--muted);font-size:11.5px}
+
+  /* 快捷回复 */
+  .quick{display:flex;flex-wrap:wrap;gap:7px;margin:-2px 0 12px 2px}
+  .quick button{border:1px solid var(--brand);background:#fff;color:var(--brand);
+    border-radius:15px;padding:5px 12px;font-size:12.5px;cursor:pointer}
+  .quick button:hover{background:var(--brand-soft)}
+
+  /* 提示条 */
+  .tips{padding:0 14px 0}
+  .tip{margin-bottom:8px;padding:8px 10px;border-radius:8px;font-size:12.5px;border:1px solid}
+  .tip.warn{background:var(--warn-bg);border-color:#ffe1a8;color:var(--warn)}
+  .tip.danger{background:var(--danger-bg);border-color:#fecaca;color:var(--danger)}
+  .tip.info{background:var(--brand-soft);border-color:#d6e2ff;color:var(--brand)}
+  .tip.ok{background:var(--ok-bg);border-color:#bbf7d0;color:var(--ok)}
+  .tip button{border:1px solid currentColor;background:#fff;color:inherit;border-radius:6px;
+    font-size:11.5px;padding:2px 8px;margin-left:8px;cursor:pointer}
+
+  /* 输入区 */
+  .cp{flex:0 0 auto;background:var(--card);border-top:1px solid var(--line);padding:9px 14px 12px}
+  .cp .box{border:1px solid var(--line);border-radius:10px;background:#fbfbfc;padding:9px 11px;
+    font-size:13.5px;color:var(--muted);min-height:40px}
+  .cp .box.active{color:var(--text)}
+  .cp .bar{display:flex;align-items:center;justify-content:space-between;margin-top:7px;font-size:11.5px;color:var(--muted)}
+  .cp .cnt.over{color:var(--danger);font-weight:600}
+  .cp .acts{display:flex;gap:7px}
+  .btn{border:none;border-radius:9px;padding:8px 14px;font-size:13px;cursor:pointer}
+  .btn.primary{background:var(--brand);color:#fff}
+  .btn.primary.dis{background:#c9d4ea;cursor:not-allowed}
+  .btn.ghost{background:#fff;border:1px solid var(--line);color:var(--text);padding:6px 10px;font-size:12.5px}
+  .btn.link{background:none;border:none;color:var(--brand);padding:6px 2px;font-size:12.5px}
+
+  /* 转人工横幅 */
+  .banner{background:var(--warn-bg);border-bottom:1px solid #ffe1a8;color:var(--warn);
+    padding:8px 14px;font-size:12.5px;flex:0 0 auto}
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <!-- ======== 原型控件（评审用，不属于产品） ======== -->
+  <aside class="panel">
+    <h2>买家侧 H5 · 原型 v2</h2>
+    <div class="sub">设计评审用 · 按《H5买家侧前端设计_v2.md》</div>
+    <div class="warnbox">⚠️ 原型：mock 数据，<b>不连后端、不发请求、不写数据</b></div>
+    <div class="state-list" id="stateList"></div>
+    <div class="note">
+      <b>v2 的关键变化：让智能体"可见"</b><br>
+      · <b>动作日志</b>（S4 / S13 / S16）：显示智能体<b>真实做了什么</b>，替代 v1 那条固定四步的装饰进度条；<br>
+      · <b>复述确认</b>（S12）：把"我理解成什么"说出来给买家确认 —— 模板做不到；<br>
+      · <b>事实冲突</b>（S13）：买家说法与系统记录对不上时点出来 —— 规则流水线会继续照错往下问；<br>
+      · <b>主动转人工带理由</b>（S14）：说明<b>为什么</b>转，而不是只显示"已转人工"；<br>
+      · <b>结论后追问</b>（S15）：结论卡落在对话流里，之后还能接着聊。<br><br>
+      <b>可点：</b>订单卡折叠 · 依据折叠 · 卡片按钮 · 快捷回复 · 缩略图（含失败态）。
+    </div>
+  </aside>
+
+  <!-- ======== 手机视口 ======== -->
+  <div class="phone" id="phone"></div>
+</div>
+
+<script>
+/* ============================================================
+   mock 数据与状态定义
+   ============================================================ */
+
+var ORDER = {
+  order_id: "O20261015001",
+  item_title: "蓝牙耳机 Pro 2",
+  pay_amount: 199.0,
+  order_status: "已签收",
+  signed_at: "2026-10-08 14:20"
+};
+
+var STEPS = ["已受理", "核实订单", "核实物流", "给出结论"];
+
+/* 每个状态只声明「与默认不同」的部分 */
+var STATES = [
+  { id: "s1", label: "S1 入口确认", badge: ["run", "待开始"], step: -1, orderFolded: false,
+    messages: [
+      { role: "agent", text: "你好，我是售后助手。确认一下是这笔订单吗？确认后我们直接开始，你不用重复描述订单信息。" }
+    ],
+    quick: [], composer: { mode: "locked", hint: "确认订单后即可输入" }, button: { text: "开始咨询", kind: "primary" } },
+
+  { id: "s2", label: "S2 对话进行中", badge: ["run", "进行中"], step: 0,
+    messages: [
+      { role: "agent", text: "你好，我是售后助手，已关联订单 O20261015001。\n请直接说说遇到的问题，也可以传照片。" },
+      { role: "buyer", text: "包裹破损了" },
+      { role: "agent", text: "收到。我先核实一下订单和物流，稍等。" }
+    ],
+    quick: [], composer: { mode: "active" } },
+
+  { id: "s3", label: "S3 追问（缺信息）", badge: ["run", "进行中"], step: 0,
+    messages: [
+      { role: "buyer", text: "包裹破损了" },
+      { role: "agent", text: "好的，我看下物流。" }
+    ],
+    card: { type: "ask", title: "还需要确认两件事",
+            why: "问清楚才能判断是否在售后时效内，避免来回折腾",
+            items: [["哪一天收到的", "例如 10-08 下午"], ["破损的是商品还是外包装", "哪个部位"]] },
+    quick: ["10-08 收到的", "外包装破了，商品没事", "商品也坏了"],
+    composer: { mode: "active" } },
+
+  { id: "s4", label: "S4 处理中（动作日志）", badge: ["run", "处理中"], step: 2,
+    messages: [
+      { role: "buyer", text: "包裹破损了" }
+    ],
+    actions: [
+      { label: "已获取订单信息", res: "蓝牙耳机 Pro 2 · 已签收 10-08" },
+      { label: "正在核实物流信息…", pending: true }
+    ],
+    quick: [], composer: { mode: "busy" } },
+
+  { id: "s5", label: "S5 结论·可退", badge: ["done", "已出结论"], step: 4,
+    messages: [
+      { role: "buyer", text: "包裹破损了" },
+      { role: "agent", text: "我核实完了，结果如下：" }
+    ],
+    card: { type: "ok", title: "可以为你办理仅退款", amount: 199.0, amountLabel: "建议退款金额",
+            lines: [["我需要做什么", "无需你再操作，我们会按原路退回"]],
+            reasons: ["物流显示 7 天前已签收，在售后时效内", "商品金额在系统自动处理范围内", "你已提交过破损照片"],
+            disclaim: "退款进度可在订单页查看；最终结果以平台处理为准。" },
+    quick: ["好的，谢谢", "为什么不能退到余额？"],
+    composer: { mode: "active" } },
+
+  { id: "s6", label: "S6 结论·需补证", badge: ["run", "等待你操作"], step: 4,
+    messages: [
+      { role: "buyer", text: "东西跟描述不一样" },
+      { role: "agent", text: "我看下单子，稍等。" }
+    ],
+    card: { type: "ask", title: "需要你补一张照片",
+            lines: [["需要什么", "商品实拍图（能看到与描述不符的地方）"], ["传到哪里", "点下面的「上传举证」即可"]],
+            why: "有实拍图才能核实描述是否不符，这也是流程要求",
+            disclaim: "传完我会立刻重新核实。" },
+    quick: ["我现在就传", "找不到包装了怎么办？"],
+    composer: { mode: "active", emphasizeUpload: true } },
+
+  { id: "s7", label: "S7 已转人工", badge: ["human", "已转人工"], step: 4,
+    banner: "已为你转接人工客服，客服会尽快接入。你可以继续留言补充信息。",
+    messages: [
+      { role: "buyer", text: "还是不行吗？" },
+      { role: "sys", text: "已转人工客服 · 14:32" },
+      { role: "agent", text: "这笔申请需要人工进一步核实，已为你转接。\n你有补充信息可以直接发在这里。" }
+    ],
+    tips: [{ k: "info", t: "人工客服接入前，你留的消息会被记录，不会丢失。" }],
+    quick: [], composer: { mode: "note", hint: "留言给人工客服…" } },
+
+  { id: "s8", label: "S8 会话结束", badge: ["done", "已结束"], step: 4,
+    messages: [
+      { role: "agent", text: "我核实完了，结果如下：" },
+      { role: "sys", text: "本次咨询已结束 · 14:40" }
+    ],
+    card: { type: "ok", title: "可以为你办理仅退款", amount: 199.0, amountLabel: "建议退款金额",
+            lines: [["我需要做什么", "无需你再操作，我们会按原路退回"]],
+            reasons: ["物流显示 7 天前已签收，在售后时效内", "商品金额在系统自动处理范围内"],
+            disclaim: "最终结果以平台处理为准。" },
+    quick: [], composer: { mode: "locked", hint: "本次咨询已结束" },
+    button: { text: "重新发起咨询", kind: "ghost" } },
+
+  { id: "s9", label: "S9a 异常·网络", badge: ["err", "连接异常"], step: 0,
+    messages: [{ role: "buyer", text: "包裹破损了" }],
+    tips: [{ k: "danger", t: "网络或服务异常，消息未发送成功。", btn: "重试" }],
+    quick: [], composer: { mode: "active", keepText: "包裹破损了" } },
+
+  { id: "s9b", label: "S9b 异常·入口未启用", badge: ["err", "暂不可用"], step: -1,
+    messages: [],
+    tips: [{ k: "warn", t: "在线助手当前暂不可用，已为你转人工客服。你可以直接在这里留言。" }],
+    quick: [], composer: { mode: "note", hint: "留言给人工客服…" } },
+
+  { id: "s9c", label: "S9c 异常·会话不存在", badge: ["err", "会话已失效"], step: -1,
+    messages: [],
+    tips: [{ k: "danger", t: "这个咨询记录已不存在（可能已超过 24 小时）。", btn: "重新发起" }],
+    quick: [], composer: { mode: "locked", hint: "请先重新发起咨询" } },
+
+  { id: "s10", label: "S10 上传中 / 失败", badge: ["run", "进行中"], step: 0,
+    messages: [
+      { role: "buyer", text: "拍了照片", thumbs: [
+        { state: "done", icon: "🖼" }, { state: "uploading", icon: "🖼" }, { state: "err", icon: "🖼" }
+      ] }
+    ],
+    tips: [{ k: "warn", t: "有 1 张上传失败（文件过大）。已为你自动压缩，可重试。", btn: "重试" }],
+    quick: [], composer: { mode: "active" } },
+
+  { id: "s11", label: "S11 超长提示", badge: ["run", "进行中"], step: 0,
+    messages: [
+      { role: "agent", text: "你好，我是售后助手。请说说遇到的问题。" }
+    ],
+    tips: [{ k: "warn", t: "内容超过 200 字，本次只作提示（不计入咨询次数），请精简后再发一次。" }],
+    quick: [], composer: { mode: "active", over: true, keepText: "我上周三下午收到的快递，当时外包装就已经明显被压变形了，我拍了几张照片，拆开后发现里面的耳机盒子也凹进去一块，我联系过快递但对方说不是他们的责任，所以我希望……" } },
+
+  /* ---------- v2 新增：智能体可见性（判断 4 / F0） ---------- */
+
+  { id: "s12", label: "S12 复述确认（A3）", badge: ["run", "待你确认"], step: 0,
+    messages: [ { role: "buyer", text: "这个充电盒盖不上，用了两天就这样了" } ],
+    card: { type: "confirm", title: "我理解一下，你确认下对不对",
+            lines: [["我的理解", "商品有质量问题，你希望退掉并退款"]],
+            why: "理解错了后面就全错了，先跟你对一下",
+            actions: [ { label: "对，就是这样", prompt: "对，就是这样" },
+                       { label: "不是，我再说明", prompt: "不是，我再说明一下" } ] },
+    quick: [], composer: { mode: "active" } },
+
+  { id: "s13", label: "S13 事实冲突（A4）", badge: ["run", "需要你确认"], step: 2,
+    messages: [ { role: "buyer", text: "我一直没收到货啊" } ],
+    actions: [
+      { label: "已获取订单信息", res: "已签收 10-08" },
+      { label: "已获取物流信息", res: "10-08 已签收 · 驿站代收" }
+    ],
+    card: { type: "conflict", title: "有个地方对不上，想跟你确认",
+            lines: [["你说的", "一直没收到货"], ["系统记录", "物流显示 10-08 已签收（驿站代收）"]],
+            why: "如果确实没收到，我需要按「未收到货」帮你走相应流程",
+            disclaim: "可能是放驿站了、家人代收了，也可能物流有误——你说下实际情况就行。" },
+    quick: ["是驿站代收了", "我没见过这个包裹", "我确认没收到"],
+    composer: { mode: "active" } },
+
+  { id: "s14", label: "S14 主动转人工（A5/A6）", badge: ["human", "已转人工"], step: 2,
+    banner: "已为你转接人工客服，客服会尽快接入。",
+    messages: [
+      { role: "buyer", text: "你们就是骗子！我要投诉！" },
+      { role: "agent", text: "抱歉让你遇到这种情况，这种体验确实很糟。" }
+    ],
+    card: { type: "escalate", title: "这件事我给你转人工处理",
+            lines: [["为什么转人工", "「是否到货」的说法与物流记录不一致，需要人工核实"],
+                    ["接下来", "客服能看到我们刚才的对话，你不用重复说一遍"]],
+            disclaim: "人工接入前你留的消息都会被记录。" },
+    quick: [], composer: { mode: "note", hint: "留言补充情况…" } },
+
+  { id: "s15", label: "S15 结论后追问（A7）", badge: ["run", "已出结论"], step: 4,
+    messages: [
+      { role: "agent", text: "我核实完了，结果如下：" },
+      { role: "agent", card: { type: "ok", title: "可以为你办理仅退款", amount: 199.0,
+          amountLabel: "建议退款金额",
+          lines: [["我需要做什么", "无需你再操作，我们会按原路退回"]],
+          reasons: ["物流显示 7 天前已签收，在售后时效内", "你已提交过破损照片"] } },
+      { role: "buyer", text: "那钱什么时候能到账？" },
+      { role: "agent", text: "具体到账时间我这边查不到，你可以在订单页看到退款进度。\n这笔不需要你再操作。" }
+    ],
+    quick: ["好的，谢谢", "如果一直没到账怎么办？"],
+    composer: { mode: "active" } },
+
+  { id: "s16", label: "S16 代理提交中", badge: ["run", "提交核实"], step: 3,
+    messages: [ { role: "buyer", text: "包裹破损了" } ],
+    actions: [
+      { label: "已获取订单信息", res: "已签收 10-08" },
+      { label: "已获取物流信息", res: "10-08 已签收" }
+    ],
+    card: { type: "ask", title: "信息够了，我帮你提交核实",
+            lines: [["提交内容", "诉求：仅退款 · 问题对象：商品 · 期望：退款"]],
+            disclaim: "结论由系统核实后给出，我会第一时间告诉你。" },
+    quick: [], composer: { mode: "busy" } }
+];
+
+var current = STATES[1];
+var extraMessages = [];   // 原型内交互追加的消息
+
+/* ============================================================
+   渲染（纯函数：数据 → HTML 字符串）
+   ============================================================ */
+
+function esc(v){
+  return String(v == null ? "" : v).replace(/&/g,"&amp;").replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+
+function renderHeader(s){
+  var b = s.badge || ["run",""];
+  var steps = "";
+  if (s.step >= 0){
+    steps = '<div class="steps">';
+    STEPS.forEach(function(name, i){
+      if (i > 0) steps += '<div class="track"></div>';
+      var cls = i < s.step ? "done" : (i === s.step ? "now" : "");
+      steps += '<div class="step ' + cls + '"><div class="dot"></div><div class="lb">' + esc(name) + "</div></div>";
+    });
+    steps += "</div>";
+  }
+  return '<div class="hd">' +
+    '<div class="row1"><span class="back">‹</span><h1>售后助手</h1>' +
+      '<span class="badge ' + b[0] + '">' + esc(b[1]) + "</span></div>" + steps + "</div>";
+}
+
+function renderOrderCard(folded){
+  return '<div class="ordercard' + (folded ? " folded" : "") + '" id="oc">' +
+    '<div class="t"><span>关联订单</span><button onclick="toggleOrder()">' +
+      (folded ? "展开" : "收起") + "</button></div>" +
+    '<div class="row"><span class="k">商品</span><span class="v">' + esc(ORDER.item_title) + "</span></div>" +
+    '<div class="row"><span class="k">订单号</span><span class="v">' + esc(ORDER.order_id) + "</span></div>" +
+    '<div class="row"><span class="k">实付</span><span class="v">¥' + ORDER.pay_amount + "</span></div>" +
+    '<div class="row"><span class="k">状态</span><span class="v">' + esc(ORDER.order_status) + " · " + esc(ORDER.signed_at) + "</span></div>" +
+    "</div>";
+}
+
+function renderThumbs(thumbs){
+  if (!thumbs || !thumbs.length) return "";
+  var html = '<div class="thumbs">';
+  thumbs.forEach(function(t){
+    var cls = t.state === "err" ? "thumb err" : (t.state === "uploading" ? "thumb uploading" : "thumb");
+    html += '<div class="' + cls + '">' + t.icon +
+      (t.state === "err" ? '<span class="retry">重试</span>' : "") + "</div>";
+  });
+  return html + "</div>";
+}
+
+function renderMessages(list){
+  var html = "";
+  list.forEach(function(m){
+    if (m.card){ html += renderCard(m.card); return; }
+    var role = m.role || "agent";
+    var body = esc(m.text || "");
+    if (m.thumbs) body += renderThumbs(m.thumbs);
+    if (m.failed) body += '<span class="failed">未发送成功<button type="button">重发</button></span>';
+    html += '<div class="msg ' + role + '"><div class="bubble">' + body + "</div></div>";
+  });
+  return html;
+}
+
+function renderCard(c){
+  if (!c) return "";
+  var cls = "card";
+  if (c.type === "ask") cls += " ask";
+  else if (c.type === "confirm") cls += " confirm";
+  else if (c.type === "conflict") cls += " conflict";
+  else if (c.type === "escalate") cls += " escalate";
+  var icon = c.type === "ask" ? "🙋"
+           : c.type === "confirm" ? "❓"
+           : c.type === "conflict" ? "⚠️"
+           : c.type === "escalate" ? "🙋" : "✅";
+  var html = '<div class="' + cls + '">';
+  html += '<div class="ct">' + icon + esc(c.title) + "</div>";
+  if (c.amount != null){
+    html += '<div class="amt">¥' + c.amount + "<small>" + esc(c.amountLabel || "") + "</small></div>";
+  }
+  (c.lines || []).forEach(function(r){
+    html += '<div class="line"><span class="k">' + esc(r[0]) + "：</span>" + esc(r[1]) + "</div>";
+  });
+  (c.items || []).forEach(function(r, i){
+    html += '<div class="line"><span class="k">' + (i + 1) + ". " + esc(r[0]) + "</span>" +
+            (r[1] ? "（" + esc(r[1]) + "）" : "") + "</div>";
+  });
+  if (c.why) html += '<div class="why">为什么要问：' + esc(c.why) + "</div>";
+  if (c.reasons && c.reasons.length){
+    html += '<details><summary>▸ 为什么是这个结果</summary><ol>';
+    c.reasons.forEach(function(r){ html += "<li>" + esc(r) + "</li>"; });
+    html += "</ol></details>";
+  }
+  if (c.disclaim) html += '<div class="disclaim">' + esc(c.disclaim) + "</div>";
+  if (c.actions && c.actions.length){
+    html += '<div class="acts">';
+    c.actions.forEach(function(a, i){
+      html += '<button class="' + (i === 0 ? "solid" : "") + '" type="button" onclick="pick(\'' + esc(a.prompt || a.label) + '\')">' + esc(a.label) + "</button>";
+    });
+    html += "</div>";
+  }
+  return html + "</div>";
+}
+
+/* F0 智能体可见性：动作日志（来自后端 SSE `action` 事件，不是前端编的） */
+function renderActions(list){
+  if (!list || !list.length) return "";
+  var html = '<div class="msg agent"><div class="actionlog">';
+  list.forEach(function(a){
+    html += '<div class="act' + (a.pending ? " pending" : "") + '"><i></i><span>' + esc(a.label) + "</span>" +
+            (a.res ? '<span class="res">' + esc(a.res) + "</span>" : "") + "</div>";
+  });
+  return html + "</div></div>";
+}
+
+function renderQuick(items){
+  if (!items || !items.length) return "";
+  var html = '<div class="quick">';
+  items.forEach(function(q){ html += '<button type="button" onclick="pick(\'' + esc(q) + '\')">' + esc(q) + "</button>"; });
+  return html + "</div>";
+}
+
+function renderTips(tips){
+  if (!tips || !tips.length) return "";
+  var html = '<div class="tips">';
+  tips.forEach(function(t){
+    html += '<div class="tip ' + t.k + '">' + esc(t.t) +
+      (t.btn ? "<button type=\"button\">" + esc(t.btn) + "</button>" : "") + "</div>";
+  });
+  return html + "</div>";
+}
+
+function renderComposer(s, text, over){
+  var m = s.composer || { mode: "active" };
+  var locked = m.mode === "locked";
+  var showText = text != null ? text : (m.keepText || "");
+  var boxCls = "box" + (showText && !locked ? " active" : "");
+  var hint = m.hint || "描述你遇到的问题…（可上传照片）";
+  var html = '<div class="cp">';
+  html += '<div class="' + boxCls + '">' + esc(showText || hint) + "</div>";
+  html += '<div class="bar"><span class="cnt' + (over ? " over" : "") + '">' +
+          (showText ? showText.length : 0) + " / 200</span>";
+  html += '<span class="acts">';
+  if (s.button){
+    html += '<button class="btn ' + (s.button.kind === "primary" ? "primary" : "ghost") + '" type="button">' +
+            esc(s.button.text) + "</button>";
+  }
+  if (!locked && !s.button){
+    html += '<button class="btn ghost" type="button">📎 上传举证</button>';
+    if (m.mode !== "note") html += '<button class="btn ghost" type="button">转人工</button>';
+    html += '<button class="btn primary' + (m.mode === "busy" ? " dis" : "") + '" type="button">' +
+            (m.mode === "busy" ? "处理中…" : "发送") + "</button>";
+  }
+  if (m.mode === "locked" && s.button) html += '<button class="btn ghost" type="button">联系客服</button>';
+  return html + "</span></div></div>";
+}
+
+function render(){
+  var s = current;
+  var msgs = s.messages.concat(extraMessages);
+  var html = renderHeader(s);
+  if (s.banner) html += '<div class="banner">' + esc(s.banner) + "</div>";
+  html += '<div class="body">';
+  if (s.step >= 0) html += renderOrderCard(s.orderFolded);
+  html += renderMessages(msgs);
+  if (s.actions) html += renderActions(s.actions);
+  if (s.card) html += renderCard(s.card);
+  if (s.busy) html += '<div class="msg sys"><div class="bubble">' + esc(s.busy) + "</div></div>";
+  html += "</div>";
+  html += renderTips(s.tips);
+  html += renderComposer(s);
+  document.getElementById("phone").innerHTML = html;
+}
+
+/* ============================================================
+   原型交互
+   ============================================================ */
+
+var orderFolded = false;
+function toggleOrder(){
+  orderFolded = !orderFolded;
+  current.orderFolded = orderFolded;
+  render();
+}
+
+function pick(text){
+  extraMessages.push({ role: "buyer", text: text });
+  extraMessages.push({ role: "agent", text: "（原型示意）收到，我按「" + text + "」继续处理。" });
+  render();
+  var b = document.querySelector(".body");
+  if (b) b.scrollTop = b.scrollHeight;
+}
+
+function buildStateList(){
+  var box = document.getElementById("stateList");
+  STATES.forEach(function(s){
+    var b = document.createElement("button");
+    b.textContent = s.label;
+    b.className = s.id === current.id ? "on" : "";
+    b.onclick = function(){ select(s.id); };
+    box.appendChild(b);
+  });
+}
+
+function select(id){
+  current = STATES.filter(function(s){ return s.id === id; })[0] || STATES[0];
+  extraMessages = [];
+  orderFolded = !!current.orderFolded;
+  buildReset();
+  render();
+  var b = document.querySelector(".body");
+  if (b) b.scrollTop = 0;
+}
+
+function buildReset(){
+  var box = document.getElementById("stateList");
+  box.innerHTML = "";
+  buildStateList();
+}
+
+buildReset();
+render();
+</script>
+</body>
+</html>

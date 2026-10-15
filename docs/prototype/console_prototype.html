@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>商家售后指挥台 · 原型 v0</title>
+<!--
+  ============================================================
+  商家售后指挥台 原型（设计评审用）
+
+  ⚠️ 原型：mock 数据，不连后端、不发请求、不写数据。
+  按《指挥台设计_v0.md》逐条对应。
+
+  可点的地方：
+   · 左侧收件箱选单 → 右侧详情
+   · 右侧详情按状态出「指派智能体 / 介入 / 确认退款·补发·拒绝 / 驳回 / 自己处理」
+   · 左上「原型控件」切换 8 个代表性场景
+  ============================================================
+-->
+<style>
+  :root{
+    --brand:#2563eb; --brand-soft:#eef3ff; --bg:#f4f5f7; --card:#fff; --line:#e4e6eb;
+    --text:#1f2329; --muted:#8a9099; --warn:#b45309; --warn-bg:#fff7e6;
+    --danger:#b91c1c; --danger-bg:#fef2f2; --ok:#15803d; --ok-bg:#f0fdf4;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:#eceef1;color:var(--text);font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",Arial,sans-serif}
+
+  .stage{display:flex;gap:16px;padding:16px;align-items:flex-start}
+
+  /* ---------- 原型控件 ---------- */
+  .panel{width:230px;flex:0 0 230px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;position:sticky;top:16px}
+  .panel h2{margin:0 0 2px;font-size:14px}
+  .panel .sub{font-size:11px;color:var(--muted);margin-bottom:8px}
+  .panel .warnbox{background:var(--warn-bg);border:1px solid #ffe1a8;color:var(--warn);border-radius:8px;padding:5px 7px;font-size:11px;margin-bottom:8px}
+  .panel button{display:block;width:100%;text-align:left;border:1px solid var(--line);background:#fbfbfc;border-radius:7px;padding:6px 8px;font-size:12px;cursor:pointer;margin-bottom:4px;color:var(--text)}
+  .panel button.on{background:var(--brand-soft);border-color:var(--brand);color:var(--brand);font-weight:600}
+  .panel .note{margin-top:8px;font-size:11px;color:var(--muted);line-height:1.5}
+
+  /* ---------- 控制台 ---------- */
+  .console{flex:1;min-width:900px;background:var(--bg);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;height:720px}
+
+  /* 侧栏 */
+  .side{width:170px;flex:0 0 170px;background:#1f2937;color:#cbd5e1;padding:14px 10px;display:flex;flex-direction:column;gap:2px}
+  .side .brand{font-size:13px;font-weight:600;color:#fff;padding:4px 8px 12px}
+  .side a{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;font-size:13px;cursor:pointer;color:#cbd5e1}
+  .side a:hover{background:#374151}
+  .side a.on{background:var(--brand);color:#fff}
+  .side a .n{background:#e5e7eb;color:#1f2937;border-radius:9px;font-size:11px;padding:0 7px}
+  .side a.on .n{background:#fff;color:var(--brand)}
+
+  /* 列表 */
+  .list{width:300px;flex:0 0 300px;background:#fff;border-right:1px solid var(--line);display:flex;flex-direction:column}
+  .list .hd{padding:12px 14px;font-size:13px;color:var(--muted);border-bottom:1px solid var(--line)}
+  .list .items{flex:1;overflow-y:auto}
+  .case{padding:11px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+  .case:hover{background:#fafbfc}
+  .case.on{background:var(--brand-soft);border-left:3px solid var(--brand)}
+  .case .r1{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px}
+  .case .oid{font-size:12.5px;font-weight:600}
+  .case .sum{font-size:12.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .case .meta{font-size:11px;color:var(--muted);margin-top:2px;display:flex;gap:8px}
+
+  .badge{font-size:10.5px;padding:1px 7px;border-radius:9px;border:1px solid;white-space:nowrap}
+  .badge.queued{background:#f3f4f6;border-color:var(--line);color:var(--muted)}
+  .badge.running{background:var(--brand-soft);border-color:#d6e2ff;color:var(--brand)}
+  .badge.awaiting{background:var(--warn-bg);border-color:#ffe1a8;color:var(--warn)}
+  .badge.resolved{background:var(--ok-bg);border-color:#bbf7d0;color:var(--ok)}
+  .badge.escalated{background:var(--danger-bg);border-color:#fecaca;color:var(--danger)}
+
+  /* 详情 */
+  .detail{flex:1;display:flex;flex-direction:column;background:#fafbfc}
+  .detail .top{background:#fff;border-bottom:1px solid var(--line);padding:12px 16px}
+  .detail .top .r1{display:flex;align-items:center;gap:10px}
+  .detail .top h3{margin:0;font-size:15px;flex:1}
+  .detail .body{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .box{background:#fff;border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+  .box .bt{font-size:11.5px;color:var(--muted);margin-bottom:6px}
+  .box .row{display:flex;justify-content:space-between;font-size:13px;padding:2px 0}
+  .box .row .k{color:var(--muted)}
+  .box .row .v{font-weight:600}
+
+  /* 对话 */
+  .msg{display:flex;margin-bottom:8px}
+  .msg.agent{justify-content:flex-start}
+  .msg.buyer{justify-content:flex-end}
+  .msg.sys{justify-content:center}
+  .bubble{max-width:78%;padding:8px 11px;border-radius:10px;font-size:13px;white-space:pre-wrap;word-break:break-word}
+  .msg.agent .bubble{background:#fff;border:1px solid var(--line)}
+  .msg.buyer .bubble{background:var(--brand);color:#fff}
+  .msg.sys .bubble{background:transparent;border:1px dashed var(--line);color:var(--muted);font-size:11.5px}
+
+  /* 动作日志 */
+  .actionlog{background:#fff;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:12px;color:var(--muted)}
+  .actionlog .act{display:flex;align-items:center;gap:7px;padding:2px 0}
+  .actionlog .act i{width:5px;height:5px;border-radius:50%;background:#c9d4ea}
+  .actionlog .act.pending{color:var(--brand)}
+  .actionlog .act.pending i{background:var(--brand)}
+  .actionlog .act .res{color:var(--muted);font-size:11px}
+
+  /* 结论卡 */
+  .card{border:1px solid var(--line);border-left:3px solid var(--brand);border-radius:10px;padding:12px 14px;background:#fff}
+  .card.reship{border-left-color:var(--brand)}
+  .card.reject{border-left-color:var(--danger)}
+  .card .ct{font-size:14px;font-weight:600;display:flex;gap:7px;align-items:center}
+  .card .amt{font-size:22px;font-weight:700;color:var(--brand);margin:3px 0 0}
+  .card.reject .ct{color:var(--danger)}
+  .card .line{font-size:12.5px;color:#3d434d;margin-top:5px}
+  .card .line .k{color:var(--muted)}
+  .card details{margin-top:7px;font-size:12px}
+  .card details summary{color:var(--brand);cursor:pointer;list-style:none}
+  .card details summary::-webkit-details-marker{display:none}
+  .card details ol{margin:5px 0 0;padding-left:17px;color:#4b5158}
+
+  /* 操作区 */
+  .actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+  .btn{border:none;border-radius:8px;padding:8px 15px;font-size:13px;cursor:pointer}
+  .btn.primary{background:var(--brand);color:#fff}
+  .btn.ok{background:var(--ok);color:#fff}
+  .btn.danger{background:#fff;border:1px solid var(--danger);color:var(--danger)}
+  .btn.ghost{background:#fff;border:1px solid var(--line);color:var(--text)}
+  .hint{font-size:12px;color:var(--muted)}
+  .thumbs{display:flex;gap:7px;flex-wrap:wrap}
+  .thumb{width:72px;border:1px solid var(--line);border-radius:8px;padding:6px 4px;font-size:15px;cursor:pointer;background:#fafbfc;display:flex;flex-direction:column;align-items:center;gap:2px;text-align:center}
+  .thumb .nm{font-size:9.5px;color:var(--muted);word-break:break-all}
+  .thumb:hover{border-color:var(--brand)}
+  .lightbox{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:99}
+  .lb-inner{background:#fff;border-radius:12px;padding:20px;text-align:center;max-width:420px}
+  .lb-img{width:320px;height:220px;border:1px solid var(--line);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:40px;background:#f4f5f7}
+  .lb-name{margin-top:10px;font-size:13px;color:var(--text)}
+</style>
+</head>
+<body>
+<div class="stage">
+  <aside class="panel">
+    <h2>指挥台 · 原型 v0</h2>
+    <div class="sub">按《指挥台设计_v0.md》</div>
+    <div class="warnbox">⚠️ mock 数据，不连后端、不发请求</div>
+    <div id="switcher"></div>
+    <div class="note">人始终在环：指派 / 介入 / 确认权都在管理员，智能体只在被指派后自主。</div>
+  </aside>
+  <div class="console" id="console"></div>
+</div>
+
+<script>
+/* ============================================================
+   mock 数据
+   ============================================================ */
+
+var CASES = [
+  { id:"O20261015001", buyer:"张**", summary:"包裹破损，申请退款", intent:"退款", status:"queued",
+    time:"14:02", unread:true,
+    facts:{ order:{商品:"蓝牙耳机 Pro 2", 实付:"¥199", 物流:"已签收 10-08"},
+            evidence:["破损外包装.jpg","耳机凹陷.jpg"] },
+    messages:[ {role:"buyer", text:"收到时外包装就破了，耳机盒子也凹了，想退款"} ] },
+
+  { id:"O20261015002", buyer:"李**", summary:"收到的是别的型号，要求补发", intent:"补发", status:"queued",
+    time:"13:47",
+    facts:{ order:{商品:"保温杯 500ml", 实付:"¥89", 物流:"已签收 10-07"},
+            evidence:["错发型号.jpg"] },
+    messages:[ {role:"buyer", text:"我买的是 500ml，发来的是 350ml，能不能补发一个对的"} ] },
+
+  { id:"O20261015003", buyer:"王**", summary:"一直没收到货", intent:"退款", status:"running",
+    time:"13:30",
+    facts:{ order:{商品:"充电线 2 米", 实付:"¥29", 物流:"已签收 10-08"},
+            evidence:[] },
+    messages:[ {role:"buyer", text:"我一直没收到货啊"},
+               {role:"agent", text:"我看下物流，稍等。"} ],
+    actions:[ {label:"已获取订单信息", res:"已签收 10-08"},
+              {label:"已获取物流信息", res:"10-08 已签收 · 驿站代收"},
+              {label:"正在与买家确认是否驿站代收…", pending:true} ] },
+
+  { id:"O20261015004", buyer:"赵**", summary:"商品与描述不符", intent:"退款", status:"awaiting_confirm",
+    time:"12:58",
+    facts:{ order:{商品:"蓝牙耳机 Pro 2", 实付:"¥199", 物流:"已签收 10-05"},
+            evidence:["实拍1.jpg","实拍2.jpg","实拍3.jpg"] },
+    messages:[ {role:"buyer", text:"耳机降噪效果跟宣传差很多"},
+               {role:"agent", text:"我核实完了，结果如下："} ],
+    card:{ type:"refund", title:"同意退款", amount:199, lines:[["方式","原路退回"]],
+           reasons:["物流显示 7 天前已签收，在售后时效内","你已提交实拍图"] } },
+
+  { id:"O20261015005", buyer:"钱**", summary:"少发一件，要求补发", intent:"补发", status:"awaiting_confirm",
+    time:"12:40",
+    facts:{ order:{商品:"袜子 5 双装", 实付:"¥39", 物流:"已签收 10-06"},
+            evidence:"1 张图" },
+    messages:[ {role:"buyer", text:"买的 5 双，只发了 4 双"},
+               {role:"agent", text:"我核实完了，结果如下："} ],
+    card:{ type:"reship", title:"同意补发", amount:null, lines:[["补发","袜子 1 双"],
+           ["金额","在自动处理范围内"]], reasons:["错发/漏发 + 有实拍图","金额低于补发上限"] } },
+
+  { id:"O20261015006", buyer:"孙**", summary:"无理由退款，超出时效", intent:"退款", status:"awaiting_confirm",
+    time:"12:15",
+    facts:{ order:{商品:"收纳盒", 实付:"¥59", 物流:"已签收 09-20"},
+            evidence:"无" },
+    messages:[ {role:"buyer", text:"不想要了，退了吧"},
+               {role:"agent", text:"我核实完了，结果如下："} ],
+    card:{ type:"reject", title:"暂不满足处理条件", amount:null,
+           lines:[["理由","签收已超过售后时效（09-20 签收）"]],
+           reasons:["签收已超过售后时效"] } },
+
+  { id:"O20261015007", buyer:"周**", summary:"包裹破损，已退款", intent:"退款", status:"resolved",
+    time:"11:50",
+    facts:{ order:{商品:"手机壳", 实付:"¥49", 物流:"已签收 10-04"}, evidence:["破损1.jpg","破损2.jpg"] },
+    messages:[ {role:"agent", text:"已为你办理退款 ¥49，原路退回。"},
+               {role:"sys", text:"管理员确认 · 11:52"} ],
+    card:{ type:"refund", title:"已退款", amount:49, lines:[["状态","已执行 · 原路退回"]] } },
+
+  { id:"O20261015008", buyer:"吴**", summary:"质量争议，已转人工", intent:"退款", status:"escalated",
+    time:"11:20",
+    facts:{ order:{商品:"台灯", 实付:"¥299", 物流:"已签收 10-03"}, evidence:["争议1.jpg","争议2.jpg"] },
+    messages:[ {role:"agent", text:"这笔涉及质量问题，需要人工进一步核实，已为你转接。"},
+               {role:"sys", text:"管理员已接管 · 11:25"} ] },
+];
+
+var STATUS_LABEL = { queued:"待处理", running:"智能体处理中", awaiting_confirm:"待确认", resolved:"已完结", escalated:"已转人工" };
+
+var selected = CASES[0];
+
+/* ============================================================
+   渲染
+   ============================================================ */
+
+function esc(v){ return String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+function counts(){
+  var c = {queued:0,running:0,awaiting_confirm:0,resolved:0,escalated:0};
+  CASES.forEach(function(x){ c[x.status]++; });
+  return c;
+}
+
+function renderSide(){
+  var c = counts();
+  var items = [["inbox","收件箱","queued+running+awaiting_confirm"],
+               ["running","处理中","running"],["awaiting","待确认","awaiting_confirm"],
+               ["resolved","已完结","resolved"],["escalated","已转人工","escalated"]];
+  var n = { inbox:c.queued+c.running+c.awaiting_confirm, running:c.running, awaiting:c.awaiting_confirm, resolved:c.resolved, escalated:c.escalated };
+  var html = '<div class="side"><div class="brand">售后指挥台</div>';
+  items.forEach(function(it){
+    html += '<a class="'+(it[0]==="inbox"?"on":"")+'">'+it[1]+'<span class="n">'+n[it[0]]+"</span></a>";
+  });
+  return html + "</div>";
+}
+
+function renderList(){
+  var html = '<div class="list"><div class="hd">售后问题（实时收件箱）</div><div class="items">';
+  CASES.forEach(function(c){
+    html += '<div class="case'+(c===selected?" on":"")+'" data-id="'+c.id+'">' +
+      '<div class="r1"><span class="oid">'+c.id+'</span>' +
+        '<span class="badge '+c.status+'">'+STATUS_LABEL[c.status]+"</span></div>" +
+      '<div class="sum">'+esc(c.buyer)+" · "+esc(c.summary)+"</div>" +
+      '<div class="meta"><span>'+esc(c.intent)+"</span><span>"+c.time+"</span>" +
+        (c.unread?'<span style="color:var(--brand)">● 新</span>':"") + "</div></div>";
+  });
+  return html + "</div></div>";
+}
+
+function renderFacts(c){
+  var rows = "";
+  for (var k in c.facts.order){ rows += '<div class="row"><span class="k">'+k+'</span><span class="v">'+esc(c.facts.order[k])+"</span></div>"; }
+  var ev = c.facts.evidence || [];
+  var evHtml;
+  if (!ev.length){ evHtml = '<div class="row"><span class="k">已提交</span><span class="v">无</span></div>'; }
+  else {
+    evHtml = '<div class="thumbs">';
+    ev.forEach(function(name){
+      evHtml += '<div class="thumb" data-ev="'+esc(name)+'" onclick="showEvidence(this)">🖼<span class="nm">'+esc(name)+"</span></div>";
+    });
+    evHtml += "</div>";
+  }
+  return '<div class="grid">' +
+    '<div class="box"><div class="bt">订单事实</div>'+rows+"</div>" +
+    '<div class="box"><div class="bt">举证材料（点击查看）</div>'+evHtml+"</div>" +
+    "</div>";
+}
+
+function renderMsgs(c){
+  var html = "";
+  (c.messages||[]).forEach(function(m){
+    html += '<div class="msg '+(m.role||"agent")+'"><div class="bubble">'+esc(m.text)+"</div></div>";
+  });
+  return html;
+}
+
+function renderActions(c){
+  if (c.actions) return "";
+  return "";
+}
+function renderActionLog(c){
+  if (!c.actions || !c.actions.length) return "";
+  var html = '<div class="actionlog">';
+  c.actions.forEach(function(a){
+    html += '<div class="act'+(a.pending?" pending":"")+'"><i></i><span>'+esc(a.label)+"</span>"+
+      (a.res?'<span class="res">'+esc(a.res)+"</span>":"")+"</div>";
+  });
+  return html + "</div>";
+}
+
+function renderCard(c){
+  var card = c.card;
+  if (!card) return "";
+  var cls = "card " + (card.type==="reject"?"reject":(card.type==="reship"?"reship":""));
+  var icon = card.type==="refund"?"✅":(card.type==="reship"?"📦":"⛔");
+  var html = '<div class="'+cls+'"><div class="ct">'+icon+" "+esc(card.title)+"</div>";
+  if (card.amount!=null) html += '<div class="amt">¥'+card.amount+"</div>";
+  (card.lines||[]).forEach(function(r){ html += '<div class="line"><span class="k">'+esc(r[0])+"：</span>"+esc(r[1])+"</div>"; });
+  if (card.reasons && card.reasons.length){
+    html += "<details><summary>▸ 判断依据</summary><ol>";
+    card.reasons.forEach(function(r){ html += "<li>"+esc(r)+"</li>"; });
+    html += "</ol></details>";
+  }
+  return html + "</div>";
+}
+
+function renderOpBar(c){
+  var html = '<div class="actions">';
+  if (c.status==="queued"){
+    html += '<button class="btn primary" data-op="dispatch">指派智能体</button>' +
+            '<button class="btn ghost" data-op="self">自己处理</button>' +
+            '<span class="hint">指派后智能体将与买家沟通、取证、判定</span>';
+  } else if (c.status==="running"){
+    html += '<span class="hint">智能体处理中…</span>' +
+            '<button class="btn danger" data-op="intervene">介入（接管）</button>';
+  } else if (c.status==="awaiting_confirm"){
+    var label = c.card.type==="refund"?"确认退款":(c.card.type==="reship"?"确认补发":"确认拒绝");
+    html += '<button class="btn ok" data-op="confirm">'+label+"</button>" +
+            '<button class="btn danger" data-op="reject">驳回</button>' +
+            '<span class="hint">确认后资金/库存动作按红线分级执行</span>';
+  } else if (c.status==="resolved"){
+    html += '<span class="hint">已完结，结论已归档。</span>';
+  } else if (c.status==="escalated"){
+    html += '<span class="hint">已转人工，由管理员接管处理。</span>';
+  }
+  return html + "</div>";
+}
+
+function renderDetail(c){
+  var html = '<div class="detail"><div class="top"><div class="r1">' +
+    "<h3>"+c.id+" · "+esc(c.buyer)+'</h3>' +
+    '<span class="badge '+c.status+'">'+STATUS_LABEL[c.status]+"</span>" +
+    '<span style="font-size:12px;color:var(--muted)">'+esc(c.intent)+" · "+c.time+"</span></div></div>";
+  html += '<div class="body">';
+  html += renderFacts(c);
+  html += renderMsgs(c);
+  html += renderActionLog(c);
+  html += renderCard(c);
+  html += renderOpBar(c);
+  return html + "</div></div>";
+}
+
+function render(){
+  var html = renderSide() + renderList() + renderDetail(selected);
+  document.getElementById("console").innerHTML = html;
+  // 绑定列表点击
+  var items = document.querySelectorAll(".case");
+  items.forEach(function(el){
+    el.onclick = function(){
+      selected = CASES.filter(function(c){return c.id===el.getAttribute("data-id");})[0];
+      render();
+    };
+  });
+  // 绑定操作按钮
+  document.querySelectorAll("[data-op]").forEach(function(b){
+    b.onclick = function(){ doOp(b.getAttribute("data-op")); };
+  });
+}
+
+function doOp(op){
+  var c = selected;
+  if (op==="dispatch"){ c.status="running"; c.actions=[
+    {label:"已获取订单信息", res:c.facts.order["物流"]},
+    {label:"正在核实物流与举证…", pending:true}]; }
+  else if (op==="intervene"){ c.status="escalated"; c.messages.push({role:"sys",text:"管理员已介入接管"}); }
+  else if (op==="confirm"){ c.status="resolved"; if(c.card.type!=="reject"){ c.card.title=(c.card.type==="reship"?"已补发":"已退款"); } else { c.card.title="已拒绝"; }
+    c.card.lines = [["状态","已执行 · 管理员确认"]];
+    c.messages.push({role:"sys",text:"管理员确认"}); }
+  else if (op==="reject"){ c.status="escalated"; c.messages.push({role:"sys",text:"管理员驳回，转人工复核"}); }
+  else if (op==="self"){ c.status="escalated"; c.messages.push({role:"sys",text:"管理员选择自己处理"}); }
+  render();
+}
+
+/* ============================================================
+   原型控件
+   ============================================================ */
+
+function buildSwitcher(){
+  var box = document.getElementById("switcher");
+  var labels = [
+    ["queued","S1 待处理（未指派）",1],
+    ["running","S2 智能体处理中",3],
+    ["awaiting_confirm","S3 待确认·退款",4],
+    ["awaiting_reship","S4 待确认·补发",5],
+    ["awaiting_reject","S5 待确认·拒绝",6],
+    ["resolved","S6 已完结",7],
+    ["escalated","S7 已转人工",8],
+  ];
+  labels.forEach(function(l){
+    var b = document.createElement("button");
+    b.textContent = l[1];
+    b.onclick = function(){ jump(l[0], l[2]); };
+    box.appendChild(b);
+  });
+}
+function jump(mode, idx){
+  if (mode==="awaiting_reship" || mode==="awaiting_reject"){ selected = CASES[idx-1]; }
+  else { selected = CASES.filter(function(c){ return c.status===mode; })[0] || CASES[idx-1]; }
+  render();
+}
+
+function showEvidence(el){
+  var name = el.getAttribute("data-ev");
+  var lb = document.createElement("div");
+  lb.className = "lightbox";
+  lb.innerHTML = '<div class="lb-inner"><div class="lb-img">🖼 证据图（mock）</div><div class="lb-name">'+esc(name)+"</div></div>";
+  lb.onclick = function(){ lb.remove(); };
+  document.body.appendChild(lb);
+}
+
+buildSwitcher();
+render();
+</script>
+</body>
+</html>

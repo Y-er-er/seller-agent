@@ -1,0 +1,77 @@
+# ============================================================
+# 演示假订单（本地 mock 模式）
+# ------------------------------------------------------------
+# 用途：让「买家 H5 扮演买家 + 卖家智能体自演演练」有可查询的
+#       订单 / 物流 / 买家画像事实。
+#
+# ⚠️ 边界（与 dev_seed.py 同口径）：
+#   - 仅在**未配置真实业务 API**（ORDER_API_BASE / LOGISTICS_API_BASE）时生效；
+#   - 已配置真实 API 时跳过注入，避免演示数据混入真实链路；
+#   - 生产部署可删除本文件并移除 app/demo_seed.py 及 lifespan 中的调用。
+#
+# 使用：
+#   1. 起服务（后端会在启动时自动注入本文件里的全部订单）；
+#   2. 打开买家 H5：frontend/h5.html?order_id=DEMO001（扮演买家发消息）；
+#   3. 打开指挥台：frontend/console.html（看对话历史 / 结论卡 / 确认）。
+#
+# 字段：
+#   logistics_status: not_signed（未签收）/ signed（已签收）/ in_transit（运输中）
+#   profile: 买家画像（信用分 / 90 天退款率 / 90 天退款笔数）
+#   note: 仅供人看的场景说明（代码不使用）
+# ============================================================
+version: "1"
+
+demo_orders:
+  # ---- 未签收 + 未收到货 + 小额 → 自动退款（R2）----
+  - order_id: DEMO001
+    item_category: 蓝牙耳机 Pro 2
+    pay_amount: 39
+    logistics_status: not_signed
+    traces: ["已揽收", "运输中"]
+    profile: { buyer_credit_score: 600, buyer_refund_rate_90d: 0.05, refund_count_90d: 1 }
+    note: 未签收 + 未收到货 → 自动退款（R2）
+
+  # ---- 已签收 + 称未收到 → 要求补证（R3）----
+  - order_id: DEMO002
+    item_category: 手机壳
+    pay_amount: 199
+    logistics_status: signed
+    traces: ["已揽收", "已签收"]
+    profile: { buyer_credit_score: 600, buyer_refund_rate_90d: 0.05, refund_count_90d: 0 }
+    note: 已签收却称未收到 → 要求补证（R3）
+
+  # ---- 小额 + 高信用 + 低退款率 → 自动退款（R4）----
+  - order_id: DEMO003
+    item_category: 快充数据线 2 米
+    pay_amount: 30
+    logistics_status: signed
+    traces: ["已揽收", "已签收"]
+    profile: { buyer_credit_score: 720, buyer_refund_rate_90d: 0.05, refund_count_90d: 0 }
+    note: 小额 + 高信用 → 自动退款（R4）
+
+  # ---- 高频退款风险 → 转人工（R5）----
+  - order_id: DEMO004
+    item_category: 收纳盒
+    pay_amount: 120
+    logistics_status: signed
+    traces: ["已揽收", "已签收"]
+    profile: { buyer_credit_score: 650, buyer_refund_rate_90d: 0.20, refund_count_90d: 6 }
+    note: 高频退款风险 → 转人工（R5）
+
+  # ---- 错发漏发 + 诉求补发 + 有举证 → 自动补发（R9）----
+  - order_id: DEMO005
+    item_category: 保温杯 500ml
+    pay_amount: 89
+    logistics_status: signed
+    traces: ["已揽收", "已签收"]
+    profile: { buyer_credit_score: 700, buyer_refund_rate_90d: 0.05, refund_count_90d: 0 }
+    note: 错发漏发 + 诉求补发 + 有图 → 自动补发（R9）
+
+  # ---- 大额 + 质量主张 → 转人工（R1 + R7）----
+  - order_id: DEMO006
+    item_category: 护眼台灯
+    pay_amount: 1800
+    logistics_status: signed
+    traces: ["已揽收", "已签收"]
+    profile: { buyer_credit_score: 700, buyer_refund_rate_90d: 0.05, refund_count_90d: 0 }
+    note: 大额 + 质量主张 → 转人工（R1 + R7）
