@@ -324,7 +324,10 @@ async def run_checks(graph) -> None:
     h = await api.health()
     check("W23 健康检查 ok", h["status"] == "ok", f"实得 {h['status']}")
     check("W23 审计库状态已暴露", h["audit_db"]["reachable"] is True, f"实得 {h['audit_db']}")
-    check("W23 模型计费闸门默认关闭", h["llm"]["enabled"] is False, f"实得 {h['llm']}")
+    check("W23 模型开关如实反映配置", h["llm"]["enabled"] == settings.llm_enabled, f"实得 {h['llm']}")
+    check("W23 模型可用性由「开关 + 密钥」共同决定",
+          h["llm"]["text_available"] == (settings.llm_enabled and bool(settings.dashscope_api_key)),
+          f"实得 {h['llm']}")
     check("W23 影子模式已暴露", h["shadow_mode"] is True, f"实得 {h['shadow_mode']}")
 
     # ---------------- W24 配置自检（防"配置合法但语义失效"）----------------

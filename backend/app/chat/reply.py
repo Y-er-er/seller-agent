@@ -15,18 +15,20 @@ from __future__ import annotations
 from typing import Any
 
 #: 结论码 → 面向买家的定性说明（**不含金额与处置细节**，那部分由依据逐条列出）
+#: ⚠️ 措辞**不绑定"仅退款"**：`auto_pass` 在不同诉求方向下会落地为退款或补发，
+#:    结论页不能替买家预设处置方式（那是处置层的事，见 rules/disposal.py）。
 CONCLUSION_LABELS: dict[str, str] = {
-    "auto_pass": "经核实，你的申请符合「仅退款」条件，我们会按流程为你处理。",
-    "auto_reject": "经核实，本次申请暂不符合「仅退款」条件。",
+    "auto_pass": "经核实，你的申请符合处理条件，我们会按流程为你处理。",
+    "auto_reject": "经核实，本次申请暂不符合处理条件。",
     "request_evidence": "目前材料还不足以判断，需要你补充举证后再继续。",
     "to_human": "这笔申请需要人工客服进一步核实，已为你转接。",
 }
 
-#: 槽位键 → 中文名（追问话术用）
+#: 槽位键 → 中文名（追问话术用）。键名与 `slots.SLOT_*` 一致（术语三分后的新名）。
 SLOT_LABELS: dict[str, str] = {
-    "claim_type": "你希望怎么处理（例如仅退款 / 补发 / 换货）",
+    "issue_reason": "遇到了什么问题（未收到货 / 质量问题 / 错发漏发 / 无理由）",
     "issue_object": "问题出在哪里（商品本身 / 包装 / 物流）",
-    "expectation": "你期望的处理方式",
+    "claim_direction": "你希望怎么处理（仅退款 / 补发 / 换货）",
 }
 
 _FALLBACK = "这笔申请的处理结果如下。"
@@ -83,3 +85,12 @@ def render_unavailable() -> str:
 def render_exhausted() -> str:
     """单轮工具预算耗尽、且模型未给出收尾文本时的兜底话术。"""
     return "抱歉，这次没能一次把问题处理完，已为你转接人工客服，请稍等。"
+
+
+def render_human_takeover() -> str:
+    """管理员已接管时的买家侧提示。
+
+    注意：**这不是会话消息**（不落库），而是给界面用的即时提示——
+    会话此刻归人工，智能体若再写一条进去，会与人说的话打架。
+    """
+    return "已由人工客服接管，你的消息已收到，请稍候。"

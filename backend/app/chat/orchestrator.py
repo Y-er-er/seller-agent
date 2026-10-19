@@ -25,18 +25,25 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.chat import agent, llm_adapter, reply, session, state, tools
+from app.chat import agent, llm_adapter, reply, session, slots, state, tools
 from app.config import settings
 from app.db import chat_repo as repo
 from app.rules.disposal import resolve_disposal
 
 logger = logging.getLogger(__name__)
 
-# 送入模型的**历史消息条数上限**（上下文最小化：只给最近 N 条，不整段回灌）
-MAX_HISTORY_MESSAGES = 12
+# 送入模型的**历史消息条数上限**（只给最近 N 条，不整段回灌）。
+# 取值依据：一次完整售后往复（买家 3—5 句 + 智能体 3—5 句 + 工具结果）通常 ≤20 条，
+# 20 条足以覆盖完整上下文；不是按"省 token"设定的。
+MAX_HISTORY_MESSAGES = 20
 
-# 角色映射：业务表用 buyer/agent，模型接口用 user/assistant
-_ROLE_TO_MODEL = {"buyer": "user", "agent": "assistant"}
+# 角色映射：业务表用 buyer / agent / human，模型接口用 user / assistant。
+# ⚠️ `human`（人工客服）映射为 assistant —— 与智能体同属"我方"；
+#    真正的区分靠内容前缀（见 HUMAN_PREFIX），避免模型把人的话当成自己说过的。
+_ROLE_TO_MODEL = {"buyer": "user", "agent": "assistant", "human": "assistant"}
+
+#: 人工消息进入模型上下文时的前缀标记（**只作用于送入模型的上下文，不改落库原文**）
+HUMAN_PREFIX = "[人工客服] "
 
 
 def build_history(order_id: str, messages: list[dict[str, Any]], *, limit: int | None = None) -> list[dict[str, Any]]:
@@ -49,11 +56,28 @@ def build_history(order_id: str, messages: list[dict[str, Any]], *, limit: int |
     recent = messages[-cap:] if cap > 0 else []
     history: list[dict[str, Any]] = [{"role": "system", "content": agent.build_system_prompt(order_id)}]
     for msg in recent:
-        role = _ROLE_TO_MODEL.get(str(msg.get("role") or ""))
+        raw_role = str(msg.get("role") or "")
+        role = _ROLE_TO_MODEL.get(raw_role)
         content = str(msg.get("content") or "").strip()
         if role and content:
+            # 人工发言加前缀：让模型知道"这句是客服说的，不是我说的"
+            if raw_role == state.ROLE_HUMAN:
+                content = HUMAN_PREFIX + content
             history.append({"role": role, "content": content})
     return history
+
+
+async def _slot_value(case_id: str, slot: str) -> str:
+    """读取某个槽位的当前值（取不到返回空串，不抛异常）。"""
+    try:
+        rows = await repo.list_slots(case_id)
+    except Exception as exc:  # noqa: BLE001 —— 读不到槽位不影响对话，但会退化为默认方向
+        logger.warning("读取槽位 %s 失败（忽略）：%s", slot, exc)
+        return ""
+    for row in rows:
+        if row.get("slot") == slot and row.get("value"):
+            return str(row["value"])
+    return ""
 
 
 async def _registered_evidence(case_id: str) -> list[str]:
@@ -122,9 +146,19 @@ async def handle_buyer_message(
     `model` 可注入（测试用脚本化桩）；为 `None` 时走 `llm_adapter.get_chat_model()`
     （双开关默认关闭 → 返回 None → 循环降级，**不会擅自计费**）。
     """
+    # 0) 先读工单：判断管理员是否已接管 —— 它决定下面走"人"还是走"智能体"
+    case = await repo.get_case(case_id)
+    taken_over = bool(case) and str(case.get("assignee") or "") == state.ASSIGNEE_MANUAL
+
     # 1) 护栏 + 落库（终态 / 成本 / 字数 / 轮数）
-    accepted = await session.append_buyer_message(case_id, text)
+    #    ⚠️ 人工接管时"终态 / 成本 / 轮数"三条豁免：转人工会把会话置为终态，
+    #       若照旧拒收，买家会被"会话已结束"挡在门外，人反而接不上话。
+    accepted = await session.append_buyer_message(case_id, text, human_takeover=taken_over)
     if not accepted.get("accepted"):
+        # 护栏触发转人工（轮数耗尽 / 字数二次超长 / 成本暂停）时，工单也要落到人工队列，
+        # 否则指挥台仍显示旧状态，管理员看不到这是一笔等待人工的工单。
+        if accepted.get("escalated"):
+            await repo.update_case(case_id, workflow_status="escalated")
         return {
             "accepted": False,
             "case_id": case_id,
@@ -134,7 +168,32 @@ async def handle_buyer_message(
             "escalated": bool(accepted.get("escalated")),
         }
 
-    # 2) 跑一轮（对已有的会话消息，不重复追加买家消息）
+    # 2) **接管守卫**：管理员已接管（assignee=manual）→ 智能体**不再自动应答**。
+    #
+    #    消息上一步已落库（人工必须看得到买家说了什么），此处直接收口：
+    #    会话此刻归人工，智能体若再写一条回复进去，会与人说的话打架。
+    #    因此只返回一条**界面提示**（`notice`，不落库），不回传 reply。
+    if taken_over:
+        await repo.record_guardrail(case_id, "human_takeover", "管理员已接管，智能体不自动应答")
+        latest = await repo.get_case(case_id) or case or {}
+        return {
+            "accepted": True,
+            "case_id": case_id,
+            "reply": "",
+            "notice": reply.render_human_takeover(),
+            "kind": "human_takeover",
+            "escalated": False,
+            "decision": None,
+            "tool_audits": [],
+            "stop_reason": "human_takeover",
+            "status": latest.get("status"),
+            "workflow_status": latest.get("workflow_status"),
+            "round": latest.get("round"),
+            "max_rounds": settings.max_rounds,
+            "gate": accepted.get("gate"),
+        }
+
+    # 3) 跑一轮（对已有的会话消息，不重复追加买家消息）
     result = await _run_round(case_id, model=model, persist_usage=persist_usage, buyer_note=text)
     result["gate"] = accepted.get("gate")
     return result
@@ -217,9 +276,11 @@ async def _run_round(
 
     # 工单状态（指挥台）：出结论 → 待确认；转人工 → escalated；其余保持 agent_running
     if kind == "decision" and decision and not decision.get("needs_human"):
-        # 诉求方向：骨架阶段默认"退款"（模型开启后从槽位 SLOT_EXPECTATION 抽取再注入）
-        intent = "refund"
-        disposal = resolve_disposal(intent, str(decision.get("conclusion") or ""))
+        # 诉求方向：由槽位 `claim_direction` 决定处置方向（退款 / 补发 / 换货）。
+        # ⚠️ 此前这里硬编码 `intent = "refund"`，导致补发永不可达（R9/R10 永不命中）。
+        direction = await _slot_value(case_id, slots.SLOT_CLAIM_DIRECTION)
+        claim_type = slots.direction_to_claim_type(direction)
+        disposal = resolve_disposal(claim_type, str(decision.get("conclusion") or ""))
         amount = decision.get("refund_amount")
         await repo.update_case(
             case_id,
@@ -227,8 +288,15 @@ async def _run_round(
             decision_result=disposal,
             decision_amount=(float(amount) if amount is not None else None),
         )
-    elif kind in ("escalated", "model_unavailable", "gate_paused", "model_error"):
+    elif kind in ("escalated", "model_unavailable", "gate_paused"):
         await repo.update_case(case_id, workflow_status="escalated")
+    elif kind == "model_error":
+        # 模型**瞬时失败**：回复本身就是「请再说一次」，**不转人工**。
+        # 若打成"已转人工"，指挥台会出现「已转人工 / 处理者=— / 买家仍可输入」的自相矛盾状态，
+        # 而且并没有任何人被指派（实测 DEMO002）。这里保持"处理中"，买家重试即可；
+        # 失败另落一条护栏事件留痕，便于排查模型侧问题。
+        await repo.record_guardrail(case_id, "model_error", "模型调用失败，本轮未完成，等待买家重试")
+        await repo.update_case(case_id, workflow_status="agent_running")
 
     latest = await repo.get_case(case_id)
     return {

@@ -8,6 +8,10 @@
   --text:#1f2329; --muted:#8a9099; --warn:#b45309; --warn-bg:#fff7e6;
   --danger:#b91c1c; --danger-bg:#fef2f2; --ok:#15803d; --ok-bg:#f0fdf4;
 }
+
+/* 内嵌形态（?embed=1）：隐藏自身顶栏，把整屏高度交还给外层控制台 */
+html.embed .topbar{display:none}
+html.embed .stage{height:100vh}
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
 body{background:#eceef1;color:var(--text);font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",Arial,sans-serif}
@@ -109,6 +113,7 @@ body{background:#eceef1;color:var(--text);font:14px/1.6 -apple-system,"PingFang 
 .btn.danger{background:#fff;border:1px solid var(--danger);color:var(--danger)}
 .btn.ghost{background:#fff;border:1px solid var(--line);color:var(--text)}
 .hint{font-size:12px;color:var(--muted)}
+.hint.hint-warn{color:var(--warn);font-weight:600}
 
 /* 错误 / 提示 */
 .err{background:var(--danger-bg);border:1px solid #fecaca;color:var(--danger);border-radius:8px;padding:8px 11px;font-size:12.5px;display:none}
@@ -129,3 +134,22 @@ body{background:#eceef1;color:var(--text);font:14px/1.6 -apple-system,"PingFang 
 .slot .k{font-size:11px;color:var(--muted)}
 .slot .v{font-size:13px;margin-top:1px;word-break:break-all}
 .slot .c{font-size:10px;color:var(--muted)}
+
+/* 人工客服发言（管理员接管后）—— 与智能体视觉区分，避免"谁说的"分不清 */
+.msg.human .bubble{border-color:#FAC775;background:#FAEEDA}
+.msg.human .meta{color:#854F0B}
+
+/* 人工发言区 */
+.composer{display:flex;gap:8px;align-items:flex-end;border:1px solid var(--line);border-radius:10px;padding:9px;background:#fafbfc}
+.composer textarea{flex:1;border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:13px;font-family:inherit;resize:vertical;min-height:38px}
+.composer .btn{flex:0 0 auto}
+
+/* 实时刷新指示：观察"智能体与买家对话过程"时，让刷新状态始终可见 */
+.live{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-left:auto}
+.live i{width:8px;height:8px;border-radius:50%;background:#97C459;animation:livePulse 1.6s ease-in-out infinite}
+.live.paused i{background:#B4B2A9;animation:none}
+.live.paused{color:var(--muted)}
+@keyframes livePulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* 对话区可滚动：实时刷新时自动滚到最新一条 */
+.box#conv{max-height:440px;overflow-y:auto}

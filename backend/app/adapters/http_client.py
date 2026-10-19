@@ -1,4 +1,8 @@
-"""外部只读 HTTP 客户端基础设施。
+"""外部只读 HTTP 客户端基础设施（**适配层**）。
+
+放在 adapters 而不是 tools：本模块是**传输层**实现，与具体业务无关；
+若留在 tools 包内，`adapters → tools` 的 import 会触发 tools 包初始化，
+而 tools 各模块又依赖 ports，形成循环导入（实测踩到）。
 
 三条硬约束：
 1. **只读**：仅暴露 GET，不提供任何写方法。
@@ -6,15 +10,15 @@
    调用方据此交由规则引擎判为"数据不足 → 转人工"，**不让网络异常中断判定链路**。
 3. **背压**：全局信号量限制并发，对齐外部 API 配额（方案 §10）。
 
-说明：本模块只负责"怎么取"，不负责"字段怎么映射"——映射在各 service 客户端内。
+说明：本模块只负责"怎么取"（传输层），不负责"字段怎么映射"。
+      映射与外部值转换分别在 `app/adapters/mapping.py` 与 `app/adapters/coerce.py`
+      （原先的 `coerce_*` 已移出本模块：它们属于适配层，留在这里会造成 adapters→tools 的反向依赖）。
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
-from enum import Enum
-from typing import Any, TypeVar
+from typing import Any
 
 import httpx
 
@@ -73,44 +77,3 @@ async def get_json(
             return None
 
     return payload if isinstance(payload, dict) else None
-
-
-_E = TypeVar("_E", bound=Enum)
-
-
-def coerce_enum(enum_cls: type[_E], value: Any, default: _E) -> _E:
-    """把外部返回值安全转换为枚举；非法值回落到默认值（不抛 ValueError）。"""
-    if isinstance(value, enum_cls):
-        return value
-    try:
-        return enum_cls(value)
-    except (ValueError, TypeError):
-        return default
-
-
-def coerce_float(value: Any, default: float = 0.0) -> float:
-    """安全转 float；None/非法值回落默认值。"""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def coerce_int(value: Any, default: int = 0) -> int:
-    """安全转 int；None/非法值回落默认值。"""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def coerce_datetime(value: Any) -> datetime | None:
-    """把外部返回值安全转为 datetime；None/空/非法值返回 None（不抛异常）。"""
-    if value is None or value == "":
-        return None
-    if isinstance(value, datetime):
-        return value
-    try:
-        return datetime.fromisoformat(str(value))
-    except (ValueError, TypeError):
-        return None

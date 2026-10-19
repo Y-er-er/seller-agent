@@ -28,46 +28,48 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
 
     # ---------- 模型名称 ----------
-    # 默认值与用户既有环境（D:\Users\17153\Desktop\.env）的命名对齐
-    llm_text_model: str = "qwen3.7-plus"
+    # ⚠️ 文本模型须为「纯文本模型」：langchain 的 ChatTongyi 仅按「名字是否含 vl」推断端点，
+    #    多模态模型（qwen3.7-plus / qwen3.8-max 等）名字不含 vl，会被误判到纯文本端点，
+    #    导致每次调用稳定返回 400 InvalidParameter: url error。
+    #    视觉模型另有独立通路（app/llm/client.py 直接用 MultiModalConversation），不受此影响。
+    llm_text_model: str = "qwen3.7-max"
     llm_vision_model: str = "qwen3-vl-plus"
 
     # ---------- 功能开关 ----------
-    # 默认**关闭**模型调用：开启即产生**计费** API 调用，须显式授权（纪律 10）。
-    # 注意：pydantic-settings 会隐式继承系统环境变量；若 OS 环境已存在
-    #      DASHSCOPE_API_KEY，本模块能读到密钥——但模型仍不会被调用，
-    #      因为总开关 llm_enabled 默认 False，构成第二道闸门。
-    llm_enabled: bool = False
+    # 模型调用是**正常运行能力**；成本是配置项（见下方「成本闸门」），**不是设计前提**。
+    # ⚠️ 开启后，任何走对话 / 问答润色 / 视觉的请求都会产生**真实计费**调用。
+    # 注意：pydantic-settings 会隐式继承系统环境变量，OS 上的 DASHSCOPE_API_KEY 可被读到。
+    llm_enabled: bool = True
     shadow_mode: bool = True
 
     # ---------- 视觉理解（举证图片，**计费**）----------
-    # 与 llm_enabled 构成双重约束：只有 llm_enabled=true 且 vision_max_images>0 时才发起调用。
-    # 成本可控：单笔申请的图片处理张数硬上限（默认 2 张），且只处理可直接送模型的 http(s) 图片。
-    vision_max_images: int = 2
+    # 闸门：只有 llm_enabled=true 且 vision_max_images>0 时才发起调用。
+    # 单笔申请的图片处理张数上限（默认 5 张），且只处理可直接送模型的 http(s) 图片。
+    vision_max_images: int = 5
     vision_timeout: float = 8.0      # 单张图片调用超时（秒），超时即降级，不阻塞判定
-    # 隐私：买家留言**默认不送**第三方模型（个人信息出境需单独评估，见方案 §11 边界声明）。
+    # 合规控制（**非成本项**）：买家留言涉个人信息出境，默认不送第三方模型。
     vision_include_buyer_note: bool = False
 
     # ---------- 口径问答（客服释疑，**不参与资格判定**）----------
-    # 确定性解释（规则命中 + 审计事实）**零成本**；仅当 qa_llm_polish=true 且总闸门开启时才用模型润色。
-    qa_llm_polish: bool = False
+    # 基线为确定性解释（规则命中 + 审计事实）；qa_llm_polish=true 时用模型润色措辞（事实仍来自规则）。
+    qa_llm_polish: bool = True
     qa_max_sources: int = 3          # 单次回答最多引用的标准口径条目数
 
     # ---------- 对话入口（P1：买家侧对话智能体）----------
-    # 默认**关闭**：新入口独立于既有判定链路，关闭即退回控制台形态（回退方案见规划书 §十四）。
-    chat_enabled: bool = False
+    # 默认开启：对话入口即本智能体的主界面。
+    chat_enabled: bool = True
 
-    # ---------- 对话护栏（**已定稿，不可放宽**；见规划书 §9.1）----------
+    # ---------- 对话护栏（产品护栏，按业务需要调整）----------
     max_rounds: int = 20             # 单会话轮数上限（一个"往返"= 一轮：买家消息 + 智能体回复）
     max_msg_chars: int = 200         # 单条消息字数上限；首次超长只提示（不计轮次），再犯转人工
     max_tools_per_round: int = 3     # 单轮内工具调用次数上限（防模型空转）
     max_slot_ask: int = 2            # 同一槽位的追问次数上限，仍拿不到即转人工
     session_timeout_hours: int = 24  # 会话静默超时（小时）；到期自动收尾或转人工
 
-    # ---------- 成本闸门（**计费红线**，见规划书 §9.1 / §13.1）----------
-    # 三级动作：免费额度优先 → 预警线暂停 → 月度硬上限停止。
+    # ---------- 成本闸门（**配置项**，不是设计前提；用于兜底，不用于限制正常使用）----------
+    # 三级动作：免费额度优先 → 预警线汇报 → 月度硬上限停止。
     # **逐次调用前置预检**，不是事后统计（否则"已经花了才发现"）。
-    cost_warning_cny: float = 0.1        # 预警线：等效消耗达此值即**暂停新会话并向用户汇报**
+    cost_warning_cny: float = 20.0       # 预警线（元）：默认取月度上限的 10%
     cost_monthly_cap_cny: float = 200.0  # 月度硬上限
     free_quota_tokens: int = 1_000_000   # 免费额度（token）；耗尽后进入现金计费
     # **额度到期日**（以官方控制台为准，形如 "2026-10-31"）。
@@ -76,9 +78,8 @@ class Settings(BaseSettings):
     free_quota_expire_date: str = ""
     # 官方控制台显示的**外部已用量**（非本项目消耗）。本地累计之外再加上它，才能得到真实剩余额度。
     free_quota_used_baseline: int = 0
-    # 单价（元 / 1K token）**须由用户按官方价填写**——本项目不臆造价格。
-    # 未填写（=0）时，闸门自动降级为**按 token 计量**兜底（累计 token ≥ 免费额度即暂停），
-    # 并在健康端点标记 `price_configured=false`，避免"因单价缺失而闸门形同虚设"。
+    # 单价（元 / 1K token）—— **可选项**，属使用者提供的外部事实，本项目不臆造价格。
+    # 留空（=0）时成本闸门只按 token 计量：**这是正常状态，不是待补的配置缺陷**，不做启动告警。
     price_input_per_1k: float = 0.0
     price_output_per_1k: float = 0.0
 
@@ -113,16 +114,51 @@ class Settings(BaseSettings):
     disposal_api_base: str = ""
     disposal_timeout: float = 5.0    # 资金动作超时（秒），超时视为失败并升级人工
 
+    # ---------- 可插拔适配层（开发/生产切换）----------
+    # 完整设计见 docs/设计_可插拔适配层_v1.md；接口契约见 docs/契约_外部数据源_v1.md。
+    #
+    # 数据源模式：
+    #   ''        自动推断（有 *_API_BASE 即 remote，否则 local）——开发与测试的首选
+    #   'local'   进程内夹具（演示数据，零外部依赖）
+    #   'remote'  真实只读 API
+    # ⚠️ 生产**务必显式设 'remote'**：此时若 *_API_BASE 为空，取数会明确失败并记 error，
+    #    **绝不回落到本地夹具** —— 杜绝"以为在用真实数据、其实在读演示数据"。
+    data_source: str = ""
+    # 对象存储后端：'local' 本地目录 / 'cos' 腾讯云 COS
+    storage_backend: str = "local"
+    # 本地存储根目录（相对 backend/），仅 storage_backend=local 时使用
+    upload_dir: str = "./data/uploads"
+    # 上传限制：单张图片字节上限（超限拒绝，不做截断）
+    upload_max_bytes: int = 5 * 1024 * 1024
+
     # ---------- 腾讯云 COS ----------
     cos_secret_id: str = ""
     cos_secret_key: str = ""
     cos_region: str = "ap-nanjing"
     cos_bucket: str = ""
 
+    # ---------- 图像生成（AI 宣传图 · 通义万相）----------
+    # ⚠️ 留空 = 未开通 / 未配置 → 生图端点会**明确报错**，绝不假装能生成。
+    #    常用型号：wanx2.1-t2i-turbo（快）· wanx2.1-t2i-plus（精细）· wan2.5-t2i-preview
+    #    需先在阿里云百炼**开通图像模型**，再把型号填到这里。
+    image_model: str = ""
+    # size 必须用**星号**（如 1024*1024）；写成小写 x 会被服务端判为 InvalidParameter
+    image_size: str = "1024*1024"
+    # 异步任务：总等待上限（秒）与轮询间隔
+    image_gen_timeout: float = 90.0
+    image_poll_interval: float = 3.0
+
     # ---------- 外部只读 API ----------
     order_api_base: str = ""
     logistics_api_base: str = ""
     aftersale_api_base: str = ""
+
+    # ---------- 演示辅助（**非业务能力**，供测试与演示）----------
+    # true：允许**任意订单号**受理——未预置的订单号按订单号**确定性合成**订单/物流/画像事实，
+    #       使售后链路（含规则判定）能完整跑通，用于把智能体测透。
+    # 两条硬边界：① 合成数据一律标注 `synthetic=true`，**不伪装成真实数据**；
+    #            ② 已配置真实业务 API（order_api_base / logistics_api_base）时**整体失效**，不污染真实链路。
+    demo_any_order: bool = True
 
     # ---------- 跨域（复核工作台）----------
     # 免构建的静态工作台通过 file:// 或本地静态端口打开，与后端**不同源**，
@@ -137,11 +173,36 @@ class Settings(BaseSettings):
         return items or ["*"]
 
     @property
+    def resolved_data_source(self) -> str:
+        """解析**实际生效**的数据源模式。
+
+        显式配置优先；未配置时从 `*_API_BASE` 推断 —— **三个 base_url 任一非空即 remote**。
+
+        为什么要统一判断、而不是各接口看自己的 base_url：后者会产生"一半数据走真实、
+        一半走夹具"的混合态 —— 那比全假更危险（看起来是真的，其实掺了演示数据）。
+        统一模式下，remote 时缺配置的接口会**明确返回 None**，问题立刻可见。
+
+        推断只为兼容开发与测试的便利，**生产应由 `DATA_SOURCE=remote` 显式声明**。
+        """
+        mode = (self.data_source or "").strip().lower()
+        if mode in ("local", "remote"):
+            return mode
+        has_any_base = bool(
+            self.order_api_base or self.logistics_api_base or self.aftersale_api_base
+        )
+        return "remote" if has_any_base else "local"
+
+    @property
+    def storage_configured(self) -> bool:
+        """腾讯云 COS 是否已配置齐全（决定 `STORAGE_BACKEND=cos` 能否真正启用）。"""
+        return bool(self.cos_secret_id and self.cos_secret_key and self.cos_bucket)
+
+    @property
     def price_configured(self) -> bool:
         """是否已配置模型单价。
 
-        未配置时成本闸门**降级为按 token 计量**（而不是"金额恒为 0、闸门永不触发"）——
-        这种静默失效正是最危险的，故在健康端点显式暴露该状态。
+        单价属**可选**的外部事实：未配置时成本闸门只按 token 计量，属**正常状态**。
+        因此在健康端点如实报告该状态，但**不做启动告警**（成本是配置项，不是设计前提）。
         """
         return self.price_input_per_1k > 0 or self.price_output_per_1k > 0
 

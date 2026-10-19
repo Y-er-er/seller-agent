@@ -71,6 +71,12 @@ class OrderSnapshot(BaseModel):
     pay_amount: float = 0.0
     signed_at: datetime | None = None
     logistics_status: LogisticsStatus = LogisticsStatus.IN_TRANSIT
+    #: 该订单对应的**商品编号**（卖家控制台的 `goods.goods_no`）。
+    #:
+    #: 为什么需要它：商品是卖家自建的、订单来自外部业务系统，两者**本来毫无关联** ——
+    #: 没有这个字段就算不出"这个商品退货率多少"。它是「商品 × 售后」之间**唯一的桥**。
+    #: 真实业务里应由订单系统提供；本地夹具按约定注入。
+    goods_no: str = ""
 
 
 class LogisticsInfo(BaseModel):

@@ -1,0 +1,1181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>卖家控制台 · 原型 v2（增强版）</title>
+<!--
+  ============================================================
+  卖家经营控制台 —— 交互原型 v2（2026-10-16）
+  ============================================================
+  v2 在 v1 基础上新增 7 项：
+    1. 概览看板（卖家一进来先看什么）
+    2. 库存与低库存预警
+    3. 批量操作（勾选后出现批量条）
+    4. 操作与 AI 审计日志（可追溯，含撤销入口）
+    5. 商品 × 售后联动（商品维度退货率与主要问题）
+    6. 陈列编排（置顶 + 拖拽排序）
+    7. AI 能力面板 + 多步任务确认
+
+  · 纯静态 mock，不连后端、不发任何请求
+  · 免构建：双击即可打开
+  · 可交互：切模块 / 拖动 AI / 批量选择 / 编排模式 / 撤销 / 确认卡
+  ============================================================
+-->
+<style>
+:root{
+  --brand:#2563eb; --brand-soft:#eef3ff; --brand-line:#d6e2ff;
+  --bg:#eceef1; --card:#fff; --line:#e4e6eb; --line2:#f0f1f3;
+  --text:#1f2329; --muted:#8a9099; --nav:#1f2937; --nav-hover:#374151;
+  --ai:#7c3aed; --ai-soft:#f5f3ff; --ai-line:#ddd6fe;
+  --warn:#b45309; --warn-bg:#fff7e6; --warn-line:#ffe1a8;
+  --danger:#b91c1c; --danger-bg:#fef2f2; --danger-line:#fecaca;
+  --ok:#15803d; --ok-bg:#f0fdf4; --ok-line:#bbf7d0;
+  --left-w:196px; --right-w:376px; --top-h:46px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{background:var(--bg);color:var(--text);
+  font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",Arial,sans-serif;overflow:hidden}
+button{font:inherit;cursor:pointer}
+input,textarea,select{font:inherit;color:inherit}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:#cbd2da;border-radius:9px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ================= 顶栏 ================= */
+.topbar{height:var(--top-h);background:var(--nav);color:#fff;display:flex;align-items:center;
+  gap:12px;padding:0 16px;z-index:30}
+.topbar .brand{font-size:15px;font-weight:600;letter-spacing:.3px}
+.topbar .brand small{font-weight:400;color:#94a3b8;margin-left:8px;font-size:12px}
+.topbar .spacer{margin-left:auto}
+.topbar .stat{font-size:12px;color:#94a3b8;display:flex;align-items:center;gap:6px}
+.topbar .stat i{width:7px;height:7px;border-radius:50%;background:#22c55e;display:inline-block}
+.topbar button{border:1px solid #475569;background:transparent;color:#cbd5e1;border-radius:6px;
+  padding:4px 10px;font-size:12px}
+.topbar button:hover{background:var(--nav-hover)}
+
+/* ================= 三栏 ================= */
+.stage{display:flex;height:calc(100vh - var(--top-h))}
+
+/* ---- 左栏 ---- */
+.side{width:var(--left-w);flex:0 0 var(--left-w);background:var(--nav);color:#cbd5e1;
+  padding:12px 10px;display:flex;flex-direction:column;gap:2px;z-index:20;overflow-y:auto}
+.side .grp{font-size:11px;color:#64748b;padding:8px 10px 4px}
+.side a{display:flex;justify-content:space-between;align-items:center;padding:9px 10px;
+  border-radius:8px;font-size:13px;cursor:pointer;color:#cbd5e1;user-select:none}
+.side a:hover{background:var(--nav-hover)}
+.side a.on{background:var(--brand);color:#fff}
+.side a .n{background:#e5e7eb;color:#1f2937;border-radius:9px;font-size:11px;padding:0 7px}
+.side a.on .n{background:#fff;color:var(--brand)}
+.side a .alert{background:var(--danger);color:#fff}
+.side .who{margin-top:auto;border-top:1px solid #334155;padding:10px;font-size:11.5px;color:#94a3b8}
+.side .who b{color:#cbd5e1;font-weight:600}
+.side .who .tag{display:inline-block;margin-top:5px;border:1px dashed #475569;border-radius:6px;
+  padding:1px 6px;font-size:10.5px;color:#94a3b8}
+
+/* ---- 中栏 ---- */
+.mid{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
+.mid .hd{background:#fff;border-bottom:1px solid var(--line);padding:11px 16px;
+  display:flex;align-items:center;gap:10px;flex:0 0 auto;flex-wrap:wrap}
+.mid .hd h2{margin:0;font-size:15px;font-weight:600}
+.mid .hd .sub{font-size:12px;color:var(--muted)}
+.mid .hd .spacer{margin-left:auto}
+.mid .body{flex:1;overflow-y:auto;padding:16px}
+.view{display:none;flex-direction:column;height:100%}
+.view.on{display:flex}
+
+.btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 12px;font-size:13px}
+.btn:hover{background:#fafbfc}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn.primary:hover{background:#1d4ed8}
+.btn.danger{background:#fff;border-color:var(--danger-line);color:var(--danger)}
+.btn.danger:hover{background:var(--danger-bg)}
+.btn.ok{background:var(--ok);border-color:var(--ok);color:#fff}
+.btn.ghost{border-color:var(--brand-line);color:var(--brand);background:var(--brand-soft)}
+.btn.sm{padding:3px 9px;font-size:12px;border-radius:6px}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.field{border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:13px;background:#fff;outline:none}
+.field:focus{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+
+/* ---- 概览看板 ---- */
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.metric{background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px 15px}
+.metric .lb{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.metric .num{font-size:26px;font-weight:700;margin-top:5px;line-height:1.1}
+.metric .num small{font-size:12px;font-weight:400;color:var(--muted);margin-left:4px}
+.metric .delta{font-size:11.5px;margin-top:4px;color:var(--muted)}
+.metric.warn{background:var(--warn-bg);border-color:var(--warn-line)}
+.metric.warn .num{color:var(--warn)}
+.metric.ai{background:var(--ai-soft);border-color:var(--ai-line)}
+.metric.ai .num{color:var(--ai)}
+.cols2{display:grid;grid-template-columns:1.15fr 1fr;gap:14px;align-items:start}
+.panel{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.panel .ph{padding:11px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+.panel .ph b{font-size:13.5px}
+.panel .ph .spacer{margin-left:auto}
+.panel .pb{padding:6px 0}
+.todo{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line2);
+  font-size:13px;cursor:pointer}
+.todo:last-child{border-bottom:none}
+.todo:hover{background:#fafbfc}
+.todo .ic{width:24px;height:24px;border-radius:7px;display:flex;align-items:center;justify-content:center;
+  font-size:12px;flex:0 0 auto}
+.todo .ic.r{background:var(--danger-bg);color:var(--danger)}
+.todo .ic.w{background:var(--warn-bg);color:var(--warn)}
+.todo .ic.b{background:var(--brand-soft);color:var(--brand)}
+.todo .tx{flex:1;min-width:0}
+.todo .tx em{font-style:normal;color:var(--muted);font-size:12px}
+.todo .go{color:var(--brand);font-size:12px}
+
+/* ---- 商品卡片网格 ---- */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(214px,1fr));gap:14px}
+.gcard{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;
+  cursor:pointer;transition:box-shadow .15s,border-color .15s;position:relative}
+.gcard:hover{box-shadow:0 4px 14px rgba(31,41,55,.08)}
+.gcard.on{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+.thumb{height:124px;background:linear-gradient(135deg,#dbeafe,#e0e7ff);position:relative;
+  display:flex;align-items:center;justify-content:center;color:#64748b;font-size:12px}
+.thumb.alt1{background:linear-gradient(135deg,#fee2e2,#fef3c7)}
+.thumb.alt2{background:linear-gradient(135deg,#dcfce7,#d1fae5)}
+.thumb.alt3{background:linear-gradient(135deg,#ede9fe,#fae8ff)}
+.thumb .ph{opacity:.75}
+.thumb .corner{position:absolute;left:8px;top:8px;background:rgba(255,255,255,.92);border-radius:6px;
+  padding:1px 6px;font-size:10.5px;color:#475569}
+.thumb .pin{position:absolute;right:8px;top:8px;background:var(--brand);color:#fff;border-radius:6px;
+  padding:1px 7px;font-size:10.5px}
+.gcard .cbody{padding:10px 12px 12px}
+.gcard .title{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gcard .desc{font-size:12px;color:var(--muted);margin-top:3px;height:34px;overflow:hidden}
+.gcard .foot{display:flex;align-items:center;justify-content:space-between;margin-top:8px}
+.price{color:#dc2626;font-size:15px;font-weight:700}
+.price small{font-size:11px;font-weight:500}
+.stk{font-size:11.5px;color:var(--muted)}
+.stk.low{color:var(--danger);font-weight:600}
+.handle{position:absolute;left:8px;bottom:8px;width:22px;height:22px;border-radius:6px;
+  background:rgba(255,255,255,.94);border:1px solid var(--line);display:none;align-items:center;
+  justify-content:center;font-size:13px;color:var(--muted);cursor:grab}
+body.arrange .handle{display:flex}
+body.arrange .gcard{cursor:grab}
+.ordnum{position:absolute;right:8px;bottom:8px;background:rgba(31,41,55,.82);color:#fff;border-radius:6px;
+  font-size:10.5px;padding:1px 6px;display:none}
+body.arrange .ordnum{display:block}
+.gcard.dragging{opacity:.45;border-style:dashed}
+.gcard.dropzone{box-shadow:0 0 0 3px var(--ai-line)}
+
+/* 批量条 */
+.bulkbar{display:none;align-items:center;gap:9px;background:var(--brand-soft);border:1px solid var(--brand-line);
+  border-radius:10px;padding:8px 12px;margin-bottom:12px;font-size:13px}
+.bulkbar.on{display:flex}
+
+/* ---- 表格 ---- */
+.tbl{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);
+  border-radius:10px;overflow:hidden}
+.tbl th{background:#fafbfc;font-size:12px;color:var(--muted);font-weight:500;text-align:left;
+  padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+.tbl td{padding:9px 12px;border-bottom:1px solid var(--line2);font-size:13px;vertical-align:middle}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr.on{background:var(--brand-soft)}
+.tbl .mini{width:38px;height:28px;border-radius:6px;background:linear-gradient(135deg,#dbeafe,#e0e7ff);
+  display:inline-block;vertical-align:middle}
+.tbl .ops{display:flex;gap:6px;white-space:nowrap}
+.badge{font-size:10.5px;padding:1px 7px;border-radius:9px;border:1px solid;white-space:nowrap}
+.badge.on_shelf{background:var(--ok-bg);border-color:var(--ok-line);color:var(--ok)}
+.badge.off_shelf{background:#f3f4f6;border-color:var(--line);color:var(--muted)}
+.badge.draft{background:var(--warn-bg);border-color:var(--warn-line);color:var(--warn)}
+.who-chip{font-size:11.5px;padding:1px 7px;border-radius:9px;border:1px solid;white-space:nowrap}
+.who-chip.human{background:#f3f4f6;border-color:var(--line);color:#475569}
+.who-chip.ai{background:var(--ai-soft);border-color:var(--ai-line);color:var(--ai)}
+.who-chip.sys{background:var(--brand-soft);border-color:var(--brand-line);color:var(--brand)}
+
+/* ---- 售后 iframe 占位 ---- */
+.embed{background:#fff;border:1px dashed var(--brand-line);border-radius:12px;height:100%;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--muted);
+  text-align:center;padding:30px}
+.embed .big{font-size:15px;color:var(--text);font-weight:600}
+.embed code{background:#f3f4f6;border-radius:6px;padding:2px 7px;font-size:12.5px;color:#475569}
+
+/* ---- 右栏 ---- */
+.right{width:var(--right-w);flex:0 0 var(--right-w);background:#fff;border-left:1px solid var(--line);
+  display:flex;flex-direction:column;z-index:20}
+.right .hd{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+.right .hd h3{margin:0;font-size:14px;font-weight:600;flex:1}
+.right .body{flex:1;overflow-y:auto;padding:14px 16px}
+.right .foot{border-top:1px solid var(--line);padding:11px 16px;display:flex;gap:8px;align-items:center}
+.f{margin-bottom:14px}
+.f label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}
+.f .row{display:flex;gap:8px;align-items:center}
+.f .row .field{flex:1}
+.ai-btn{border:1px solid var(--ai-line);background:var(--ai-soft);color:var(--ai);
+  border-radius:8px;padding:5px 10px;font-size:12px;white-space:nowrap}
+.ai-btn:hover{background:#ede9fe}
+.ai-out{margin-top:8px;border:1px solid var(--ai-line);background:var(--ai-soft);border-radius:8px;
+  padding:9px 11px;font-size:12.5px;color:#4c1d95}
+.ai-out .t{font-weight:600;margin-bottom:3px}
+.ai-out .acts{display:flex;gap:6px;margin-top:8px}
+.up{border:1px dashed var(--line);border-radius:10px;padding:14px;text-align:center;color:var(--muted);
+  font-size:12.5px;background:#fafbfc}
+.up b{color:var(--brand)}
+.mlis{display:flex;gap:8px;margin-top:9px;flex-wrap:wrap}
+.mli{width:64px;height:52px;border-radius:8px;border:1px solid var(--line);
+  background:linear-gradient(135deg,#dbeafe,#e0e7ff);position:relative;font-size:10px;color:#475569;
+  display:flex;align-items:flex-end;justify-content:center;padding-bottom:2px}
+.mli .main{position:absolute;left:0;top:0;background:var(--brand);color:#fff;border-radius:8px 0 6px 0;
+  padding:0 5px;font-size:9.5px}
+.mli .x{position:absolute;right:-6px;top:-6px;width:16px;height:16px;border-radius:50%;background:#fff;
+  border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted)}
+.hint{font-size:11.5px;color:var(--muted);line-height:1.55}
+.split{height:1px;background:var(--line);margin:14px 0}
+/* 右栏小卡片：售后情况 / AI 痕迹 */
+.minicard{border:1px solid var(--line);border-radius:10px;padding:11px 12px;background:#fafbfc}
+.minicard .mc-hd{font-size:12.5px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.kv{display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;color:#475569}
+.kv b{color:var(--text)}
+.bar{height:6px;border-radius:4px;background:#e9edf2;overflow:hidden;margin-top:5px}
+.bar i{display:block;height:100%;background:var(--brand)}
+.bar i.red{background:#dc2626}
+.bar i.amber{background:#f59e0b}
+.trace-item{font-size:12px;color:#475569;padding:4px 0;display:flex;gap:7px;align-items:flex-start}
+.trace-item .d{width:5px;height:5px;border-radius:50%;background:var(--ai);margin-top:7px;flex:0 0 auto}
+
+/* ---- 右栏＝上下文详情面板（随模块切换内容） ---- */
+.rpanel{display:none}
+.rpanel.on{display:block}
+.empty-r{text-align:center;padding:56px 20px;color:var(--muted)}
+.empty-r .ico{font-size:32px;color:#cbd5e1;margin-bottom:10px;line-height:1}
+.empty-r .tx{font-size:13px;max-width:220px;margin:0 auto;line-height:1.7}
+/* 陈列视角预览 */
+.preview-box{border:1px solid var(--brand-line);background:var(--brand-soft);border-radius:10px;
+  padding:11px 12px;margin-bottom:14px}
+.preview-box .pv-lb{font-size:11.5px;color:var(--brand);margin-bottom:8px}
+.pv-card{background:#fff;border:1px solid var(--line);border-radius:9px;padding:9px;display:flex;gap:10px;align-items:center}
+.pv-thumb{width:56px;height:56px;border-radius:7px;background:linear-gradient(135deg,#dbeafe,#e0e7ff);
+  flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:10px;color:#64748b}
+.pv-title{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pv-price{color:#dc2626;font-size:14px;font-weight:700;margin-top:2px}
+/* 模块专属字段 */
+[data-mode="gallery"] .admin-only{display:none}
+[data-mode="admin"] .gallery-only{display:none}
+/* 日志变更对比 */
+.diff{font-size:12.5px;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.diff .drow{display:flex;gap:8px;padding:7px 10px;border-bottom:1px solid var(--line2)}
+.diff .drow:last-child{border-bottom:none}
+.diff .k{width:70px;color:var(--muted);flex:0 0 auto}
+.diff .old{color:var(--muted);text-decoration:line-through}
+.diff .new{color:var(--ok);font-weight:600}
+
+/* ================= 浮动 AI 助手 ================= */
+.fab{position:fixed;right:22px;bottom:22px;width:54px;height:54px;border-radius:50%;
+  background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;border:none;
+  box-shadow:0 8px 22px rgba(37,99,235,.4);display:flex;align-items:center;justify-content:center;
+  font-size:23px;cursor:grab;z-index:60;user-select:none;touch-action:none}
+.fab:active{cursor:grabbing}
+.fab .dot{position:absolute;right:2px;top:2px;width:13px;height:13px;border-radius:50%;
+  background:#ef4444;border:2px solid #fff}
+.fab .tip{position:absolute;right:64px;top:50%;transform:translateY(-50%);background:#1f2937;color:#fff;
+  font-size:12px;padding:5px 10px;border-radius:8px;white-space:nowrap;opacity:0;pointer-events:none;
+  transition:opacity .15s}
+.fab:hover .tip{opacity:1}
+.fab .tip::after{content:"";position:absolute;right:-4px;top:50%;width:8px;height:8px;background:#1f2937;
+  transform:translateY(-50%) rotate(45deg);border-radius:1px}
+
+.drawer{position:fixed;top:var(--top-h);right:0;bottom:0;width:438px;background:#fff;
+  border-left:1px solid var(--line);box-shadow:-10px 0 30px rgba(31,41,55,.10);
+  display:flex;flex-direction:column;transform:translateX(102%);transition:transform .22s ease;z-index:70}
+.drawer.open{transform:translateX(0)}
+.drawer .dh{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:9px}
+.drawer .dh .ava{width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,#2563eb,#7c3aed);
+  color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px}
+.drawer .dh b{font-size:13.5px}
+.drawer .dh .ctx{font-size:11px;color:var(--muted)}
+.drawer .dh .spacer{margin-left:auto}
+.drawer .dh button{border:none;background:transparent;color:var(--muted);font-size:17px;padding:2px 6px;border-radius:6px}
+.drawer .dh button:hover{background:#f3f4f6}
+.chat{flex:1;overflow-y:auto;padding:14px;background:#fafbfc;display:flex;flex-direction:column;gap:12px}
+.msg{max-width:88%;font-size:13px;line-height:1.65}
+.msg.me{align-self:flex-end;background:var(--brand);color:#fff;padding:8px 12px;border-radius:12px 12px 3px 12px}
+.msg.bot{align-self:flex-start;background:#fff;border:1px solid var(--line);padding:9px 12px;
+  border-radius:12px 12px 12px 3px}
+.msg .trace{margin-top:7px;border-top:1px dashed var(--line);padding-top:6px;font-size:11.5px;color:var(--muted)}
+.msg .trace code{background:#f3f4f6;border-radius:5px;padding:1px 5px;color:#475569}
+.chips{display:flex;gap:6px;flex-wrap:wrap;padding:0 14px 10px}
+.chips button{border:1px solid var(--line);background:#fff;border-radius:14px;padding:4px 11px;
+  font-size:12px;color:#475569}
+.chips button:hover{border-color:var(--brand-line);color:var(--brand);background:var(--brand-soft)}
+.drawer .cin{border-top:1px solid var(--line);padding:10px 12px;display:flex;gap:8px;align-items:flex-end}
+.drawer .cin textarea{flex:1;border:1px solid var(--line);border-radius:10px;padding:8px 10px;
+  resize:none;height:42px;font-size:13px;outline:none}
+.drawer .cin textarea:focus{border-color:var(--brand)}
+/* 能力面板 */
+.caps{display:none;padding:12px 14px;border-bottom:1px solid var(--line);background:var(--ai-soft)}
+.caps.on{display:block}
+.caps .cap-g{font-size:11.5px;color:var(--ai);font-weight:600;margin:6px 0 5px}
+.caps .cap-l{display:flex;flex-wrap:wrap;gap:6px}
+.caps .cap-l span{background:#fff;border:1px solid var(--ai-line);border-radius:14px;
+  padding:3px 10px;font-size:12px;color:#4c1d95}
+/* 待确认卡 */
+.pend{border:1px solid var(--warn-line);background:var(--warn-bg);border-radius:10px;padding:11px 12px;
+  font-size:12.5px;color:#7c2d12;align-self:flex-start;max-width:94%}
+.pend .ttl{font-weight:700;display:flex;align-items:center;gap:6px;margin-bottom:5px;color:var(--warn)}
+.pend .det{background:#fff;border:1px solid var(--warn-line);border-radius:7px;padding:7px 9px;margin:7px 0;color:#3f3f46}
+.pend .det table{width:100%;border-collapse:collapse;font-size:12px}
+.pend .det td{padding:2px 0}
+.pend .acts{display:flex;gap:7px}
+
+/* ================= 弹窗 ================= */
+.mask{position:fixed;inset:0;background:rgba(15,23,42,.42);display:none;align-items:center;
+  justify-content:center;z-index:90}
+.mask.open{display:flex}
+.dlg{background:#fff;border-radius:14px;width:436px;max-width:92vw;overflow:hidden;
+  box-shadow:0 20px 50px rgba(15,23,42,.3)}
+.dlg .top{padding:15px 18px 0;display:flex;gap:10px;align-items:flex-start}
+.dlg .ico{width:34px;height:34px;border-radius:10px;background:var(--danger-bg);color:var(--danger);
+  display:flex;align-items:center;justify-content:center;font-size:18px;flex:0 0 auto}
+.dlg h4{margin:0 0 4px;font-size:15px}
+.dlg .txt{font-size:13px;color:#475569;line-height:1.6}
+.dlg .box{background:#fafbfc;border:1px solid var(--line);border-radius:9px;padding:9px 11px;
+  margin:11px 18px 0;font-size:12.5px;color:#475569}
+.dlg .acts{padding:14px 18px 16px;display:flex;gap:9px;justify-content:flex-end}
+
+.note{position:fixed;left:50%;bottom:8px;transform:translateX(-50%);background:rgba(31,41,55,.9);
+  color:#e2e8f0;font-size:11.5px;padding:5px 13px;border-radius:20px;z-index:80;pointer-events:none}
+.note b{color:#fbbf24}
+.toast{position:fixed;left:50%;top:60px;transform:translateX(-50%);background:#1f2937;color:#fff;
+  font-size:13px;padding:9px 16px;border-radius:10px;z-index:95;opacity:0;transition:opacity .2s;
+  pointer-events:none}
+.toast.on{opacity:1}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">卖家控制台 <small>Seller Console · 原型 v2</small></div>
+  <div class="spacer"></div>
+  <div class="stat"><i></i>已连接</div>
+  <div class="stat">实时刷新中</div>
+  <button>刷新</button>
+</div>
+
+<div class="stage">
+  <!-- ============ 左栏 ============ -->
+  <aside class="side">
+    <div class="grp">总览</div>
+    <a data-view="overview" class="on">概览</a>
+    <div class="grp">经营</div>
+    <a data-view="gallery">商品陈列 <span class="n">12</span></a>
+    <a data-view="admin">商品管理 <span class="n">18</span></a>
+    <div class="grp">服务</div>
+    <a data-view="aftersale">售后 <span class="n alert">3</span></a>
+    <a data-view="audit">操作日志 <span class="n">26</span></a>
+    <div class="who">
+      当前卖家：<b>默认卖家</b>
+      <div class="tag">登录接口已预留 · 本轮不做</div>
+    </div>
+  </aside>
+
+  <!-- ============ 中栏 ============ -->
+  <section class="mid">
+
+    <!-- ---------- ① 概览 ---------- -->
+    <div class="view on" id="v-overview">
+      <div class="hd">
+        <h2>概览</h2><span class="sub">今天需要你处理的，都在这里</span>
+        <div class="spacer"></div>
+        <button class="btn ghost" onclick="askAI('帮我总结一下今天的经营情况')">✨ 让 AI 总结今天</button>
+      </div>
+      <div class="body">
+        <div class="metrics">
+          <div class="metric">
+            <div class="lb">在售商品</div>
+            <div class="num">12<small>件</small></div>
+            <div class="delta">共 18 件 · 3 件草稿 · 3 件已下架</div>
+          </div>
+          <div class="metric warn">
+            <div class="lb">待处理售后</div>
+            <div class="num">3<small>单</small></div>
+            <div class="delta">其中 1 单已等待 2 天</div>
+          </div>
+          <div class="metric warn">
+            <div class="lb">低库存预警</div>
+            <div class="num">2<small>件</small></div>
+            <div class="delta">低于预警阈值，建议补货</div>
+          </div>
+          <div class="metric ai">
+            <div class="lb">AI 今日动作</div>
+            <div class="num">6<small>次</small></div>
+            <div class="delta">全部可在「操作日志」追溯</div>
+          </div>
+        </div>
+
+        <div class="cols2">
+          <div class="panel">
+            <div class="ph"><b>需要你处理的</b><span class="spacer"></span><span class="hint">6 项</span></div>
+            <div class="pb">
+              <div class="todo" onclick="go('aftersale')">
+                <div class="ic r">售</div>
+                <div class="tx">工单 <b>G-0012 榨汁杯</b> 买家要求人工，已等待 2 天<br />
+                  <em>未收到货 · ¥89 · 已转人工</em></div>
+                <span class="go">去处理 →</span>
+              </div>
+              <div class="todo" onclick="go('aftersale')">
+                <div class="ic r">售</div>
+                <div class="tx">工单 <b>G-0009 台灯</b> 待确认退款<br />
+                  <em>质量问题 · ¥180 · 智能体建议退款</em></div>
+                <span class="go">去处理 →</span>
+              </div>
+              <div class="todo" onclick="go('admin')">
+                <div class="ic w">库</div>
+                <div class="tx"><b>便携榨汁杯 350ml</b> 库存仅剩 <b>3 件</b><br />
+                  <em>预警阈值 10 件 · 近 7 天售出 9 件</em></div>
+                <span class="go">去补货 →</span>
+              </div>
+              <div class="todo" onclick="go('admin')">
+                <div class="ic w">库</div>
+                <div class="tx"><b>快充数据线 2 米</b> 库存仅剩 <b>6 件</b><br />
+                  <em>预警阈值 15 件</em></div>
+                <span class="go">去补货 →</span>
+              </div>
+              <div class="todo" onclick="go('admin')">
+                <div class="ic b">稿</div>
+                <div class="tx"><b>硅胶折叠水壶</b> 还是草稿，未定价<br />
+                  <em>AI 已生成文案，待你确认后上架</em></div>
+                <span class="go">去完善 →</span>
+              </div>
+              <div class="todo" onclick="go('gallery')">
+                <div class="ic b">陈</div>
+                <div class="tx">陈列页有 <b>2 件商品未排序</b>，建议调整展示顺序<br />
+                  <em>置顶商品可提升点击</em></div>
+                <span class="go">去编排 →</span>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="panel" style="margin-bottom:14px">
+              <div class="ph"><b>AI 今天做了什么</b><span class="spacer"></span>
+                <button class="btn sm" onclick="go('audit')">查看全部</button></div>
+              <div class="pb" style="padding:8px 14px">
+                <div class="trace-item"><span class="d"></span><div>10:42 把「榨汁杯」价格由 ¥89 改为 <b>¥99</b></div></div>
+                <div class="trace-item"><span class="d"></span><div>10:40 为「硅胶折叠水壶」生成了一版文案（待你采纳）</div></div>
+                <div class="trace-item"><span class="d"></span><div>10:31 给「户外」类目 3 件商品各降价 10%</div></div>
+                <div class="trace-item"><span class="d"></span><div style="color:var(--warn)">10:28 请求删除「护眼台灯」——<b>被你取消</b>，数据未改动</div></div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="ph"><b>商品健康度</b><span class="spacer"></span><span class="hint">近 30 天</span></div>
+              <div class="pb" style="padding:6px 14px 12px">
+                <div style="font-size:12.5px;color:var(--muted);margin:6px 0 2px">退货率最高的商品</div>
+                <div class="kv"><span>便携榨汁杯 350ml</span><b>8.3%</b></div>
+                <div class="bar"><i class="red" style="width:83%"></i></div>
+                <div class="kv" style="margin-top:8px"><span>玻璃保鲜盒</span><b>5.1%</b></div>
+                <div class="bar"><i class="amber" style="width:51%"></i></div>
+                <div class="kv" style="margin-top:8px"><span>快充数据线 2 米</span><b>2.2%</b></div>
+                <div class="bar"><i style="width:22%"></i></div>
+                <div class="hint" style="margin-top:10px">点商品可在右栏看到该商品的售后明细与主要问题</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- ② 商品陈列 ---------- -->
+    <div class="view" id="v-gallery">
+      <div class="hd">
+        <h2>商品陈列</h2><span class="sub">已上架商品 · 对外展示的样子</span>
+        <div class="spacer"></div>
+        <input class="field" placeholder="搜索商品…" style="width:170px" />
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="arrangeToggle" onchange="toggleArrange(this.checked)" />
+          编排模式
+        </label>
+        <button class="btn primary">＋ 新增商品</button>
+      </div>
+      <div class="body">
+        <div class="hint" id="arrangeHint" style="display:none;margin-bottom:12px">
+          编排模式：<b>拖动卡片</b>调整陈列顺序；<b>置顶</b>的商品会固定在最前。
+        </div>
+        <div class="grid" id="galleryGrid">
+          <div class="gcard on" data-g="12" onclick="selectGoods(this)">
+            <div class="thumb"><span class="ph">宣传图 1200×1200</span>
+              <span class="corner">主图</span><span class="pin">置顶</span><span class="ordnum">1</span>
+              <span class="handle">⠿</span></div>
+            <div class="cbody">
+              <div class="title">便携榨汁杯 350ml</div>
+              <div class="desc">一键启动 · 40 秒出汁 · USB 充电 · 露营通勤皆可用</div>
+              <div class="foot"><span class="price"><small>¥</small>99.00</span>
+                <span class="stk low">库存 3</span></div>
+            </div>
+          </div>
+          <div class="gcard" data-g="7" onclick="selectGoods(this)">
+            <div class="thumb alt1"><span class="ph">宣传图 1200×1200</span>
+              <span class="ordnum">2</span><span class="handle">⠿</span></div>
+            <div class="cbody">
+              <div class="title">快充数据线 2 米</div>
+              <div class="desc">100W 快充 · 尼龙编织 · 兼容主流机型</div>
+              <div class="foot"><span class="price"><small>¥</small>30.00</span>
+                <span class="stk low">库存 6</span></div>
+            </div>
+          </div>
+          <div class="gcard" data-g="5" onclick="selectGoods(this)">
+            <div class="thumb alt2"><span class="ph">宣传图 1200×1200</span>
+              <span class="ordnum">3</span><span class="handle">⠿</span></div>
+            <div class="cbody">
+              <div class="title">便携收纳盒</div>
+              <div class="desc">可折叠 · 防泼水 · 桌面 / 旅行两用</div>
+              <div class="foot"><span class="price"><small>¥</small>120.00</span>
+                <span class="stk">库存 42</span></div>
+            </div>
+          </div>
+          <div class="gcard" data-g="3" onclick="selectGoods(this)">
+            <div class="thumb alt3"><span class="ph">宣传图 1200×1200</span>
+              <span class="ordnum">4</span><span class="handle">⠿</span></div>
+            <div class="cbody">
+              <div class="title">保温杯 500ml</div>
+              <div class="desc">316 不锈钢 · 12 小时保温 · 一键弹盖</div>
+              <div class="foot"><span class="price"><small>¥</small>89.00</span>
+                <span class="stk">库存 28</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- ③ 商品管理 ---------- -->
+    <div class="view" id="v-admin">
+      <div class="hd">
+        <h2>商品管理</h2><span class="sub">全部商品 · 与「商品陈列」同一份数据</span>
+        <div class="spacer"></div>
+        <select class="field"><option>全部状态</option><option>已上架</option><option>已下架</option><option>草稿</option></select>
+        <input class="field" placeholder="搜索…" style="width:140px" />
+        <button class="btn primary">＋ 新增商品</button>
+        <button class="btn ghost">⇪ 导入 CSV</button>
+      </div>
+      <div class="body">
+        <div class="bulkbar" id="bulkbar">
+          已选 <b id="bulkCount">0</b> 项
+          <button class="btn sm">批量上架</button>
+          <button class="btn sm">批量下架</button>
+          <button class="btn sm">批量改价</button>
+          <button class="btn sm danger" onclick="openDel('已选 2 件商品','共 4 张图片','批量删除')">批量删除</button>
+          <button class="btn sm ai-btn" onclick="askAI('把选中的这 2 件商品的文案都重写一遍')">✨ 让 AI 批量处理</button>
+          <span class="hint" style="margin-left:auto">批量删除同样需要确认</span>
+        </div>
+        <table class="tbl">
+          <thead><tr>
+            <th style="width:32px"><input type="checkbox" id="ckAll" onchange="toggleAll(this.checked)" /></th>
+            <th>编号</th><th>宣传图</th><th>标题</th><th>类目</th><th>价格</th>
+            <th>库存</th><th>状态</th><th style="width:206px">操作</th>
+          </tr></thead>
+          <tbody>
+            <tr onclick="selectGoods(this,'row')">
+              <td><input type="checkbox" class="ckRow" onchange="syncBulk()" /></td>
+              <td>G-0012</td><td><span class="mini"></span></td>
+              <td>便携榨汁杯 350ml</td><td>厨房小电</td>
+              <td class="price" style="font-size:13px">¥99.00</td>
+              <td><span class="stk low">3</span></td><td><span class="badge on_shelf">已上架</span></td>
+              <td><div class="ops"><button class="btn sm">编辑</button><button class="btn sm">下架</button>
+                <button class="btn sm danger" onclick="openDel('便携榨汁杯 350ml','¥99.00 · 3 张图片','删除')">删除</button></div></td>
+            </tr>
+            <tr onclick=\"selectGoods(this,'row')\">
+              <td><input type=\"checkbox\" class=\"ckRow\" onchange="syncBulk()" /></td>
+              <td>G-0011</td><td><span class="mini"></span></td>
+              <td>快充数据线 2 米</td><td>数码配件</td>
+              <td class="price" style="font-size:13px">¥30.00</td>
+              <td><span class="stk low">6</span></td><td><span class="badge on_shelf">已上架</span></td>
+              <td><div class="ops"><button class="btn sm">编辑</button><button class="btn sm">下架</button>
+                <button class="btn sm danger" onclick="openDel('快充数据线 2 米','¥30.00 · 1 张图片','删除')">删除</button></div></td>
+            </tr>
+            <tr onclick=\"selectGoods(this,'row')\">
+              <td><input type=\"checkbox\" class=\"ckRow\" onchange="syncBulk()" /></td>
+              <td>G-0009</td><td><span class="mini"></span></td>
+              <td>护眼台灯（旧款）</td><td>照明</td>
+              <td class="price" style="font-size:13px">¥180.00</td>
+              <td>17</td><td><span class="badge off_shelf">已下架</span></td>
+              <td><div class="ops"><button class="btn sm">编辑</button><button class="btn sm">上架</button>
+                <button class="btn sm danger" onclick="openDel('护眼台灯（旧款）','¥180.00 · 2 张图片','删除')">删除</button></div></td>
+            </tr>
+            <tr onclick=\"selectGoods(this,'row')\">
+              <td><input type=\"checkbox\" class=\"ckRow\" onchange="syncBulk()" /></td>
+              <td>G-0013</td>
+              <td><span class="mini" style="background:linear-gradient(135deg,#f1f5f9,#e2e8f0)"></span></td>
+              <td>硅胶折叠水壶</td><td>户外</td>
+              <td class="price" style="font-size:13px">¥—</td>
+              <td>25</td><td><span class="badge draft">草稿</span></td>
+              <td><div class="ops"><button class="btn sm">编辑</button><button class="btn sm">上架</button>
+                <button class="btn sm danger" onclick="openDel('硅胶折叠水壶','尚未定价 · 0 张图片','删除')">删除</button></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ---------- ④ 操作日志 ---------- -->
+    <div class="view" id="v-audit">
+      <div class="hd">
+        <h2>操作日志</h2><span class="sub">谁在什么时候改了什么 · 人工与 AI 都记</span>
+        <div class="spacer"></div>
+        <select class="field" id="auditFilter" onchange="filterAudit(this.value)">
+          <option value="all">全部来源</option><option value="human">仅人工</option><option value="ai">仅 AI</option>
+        </select>
+        <button class="btn">导出</button>
+      </div>
+      <div class="body">
+        <div class="hint" style="margin-bottom:12px">
+          AI 替你做的每一步都在这里可查；<b>可撤销的动作会给出「撤销」入口</b>（撤销本身同样是破坏性动作，需要你确认）。
+        </div>
+        <table class="tbl" id="auditTbl">
+          <thead><tr>
+            <th style="width:140px">时间</th><th style="width:82px">来源</th><th>动作</th><th>对象</th>
+            <th>变更</th><th style="width:96px">操作</th>
+          </tr></thead>
+          <tbody>
+            <tr data-src="ai" onclick="selectLog(this)" style="cursor:pointer"><td>今天 10:42</td><td><span class="who-chip ai">AI</span></td>
+              <td>修改价格</td><td>便携榨汁杯 350ml</td><td>¥89.00 → <b>¥99.00</b></td>
+              <td><button class="btn sm" onclick="openUndo('价格 ¥99.00 → ¥89.00')">撤销</button></td></tr>
+            <tr data-src="ai" onclick="selectLog(this)" style="cursor:pointer"><td>今天 10:40</td><td><span class="who-chip ai">AI</span></td>
+              <td>生成文案</td><td>硅胶折叠水壶</td><td>生成 1 版（待采纳）</td>
+              <td><span class="hint">—</span></td></tr>
+            <tr data-src="ai" onclick="selectLog(this)" style="cursor:pointer"><td>今天 10:31</td><td><span class="who-chip ai">AI</span></td>
+              <td>批量改价</td><td>户外类目 3 件商品</td><td>各降价 10%</td>
+              <td><button class="btn sm" onclick="openUndo('3 件商品价格恢复原值')">全部撤销</button></td></tr>
+            <tr data-src="human" onclick="selectLog(this)" style="cursor:pointer"><td>今天 10:28</td><td><span class="who-chip human">卖家</span></td>
+              <td>取消删除</td><td>护眼台灯（旧款）</td><td>AI 的删除请求被取消</td><td><span class="hint">—</span></td></tr>
+            <tr data-src="human" onclick="selectLog(this)" style="cursor:pointer"><td>今天 09:55</td><td><span class="who-chip human">卖家</span></td>
+              <td>上架商品</td><td>便携榨汁杯 350ml</td><td>草稿 → 已上架</td>
+              <td><button class="btn sm" onclick="openUndo('下架「便携榨汁杯 350ml」')">撤销</button></td></tr>
+            <tr data-src="human" onclick="selectLog(this)" style="cursor:pointer"><td>今天 09:52</td><td><span class="who-chip human">卖家</span></td>
+              <td>上传宣传图</td><td>便携榨汁杯 350ml</td><td>新增 3 张，第 1 张设为主图</td><td><span class="hint">—</span></td></tr>
+            <tr data-src="sys" onclick="selectLog(this)" style="cursor:pointer"><td>今天 09:50</td><td><span class="who-chip sys">系统</span></td>
+              <td>低库存预警</td><td>便携榨汁杯 350ml</td><td>库存 3 < 阈值 10</td><td><span class="hint">—</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ---------- ⑤ 售后 ---------- -->
+    <div class="view" id="v-aftersale">
+      <div class="hd"><h2>售后</h2><span class="sub">本轮按当前实现原样嵌入，逻辑不改</span></div>
+      <div class="body">
+        <div class="embed">
+          <div class="big">此处内嵌现有「售后指挥台」</div>
+          <div><code>&lt;iframe src="console.html?embed=1"&gt;</code></div>
+          <div class="hint" style="max-width:460px">
+            收件箱 / 详情 / 指派·接管·退回·结案 / 人工发言 全部复用，零逻辑改动。
+            v2 新增：售后工单里的商品可点击跳转到该商品的详情（商品 × 售后联动）。
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 右栏（上下文详情面板 · 随模块切换内容） ============ -->
+  <aside class="right" id="rightPane" data-mode="gallery">
+    <div class="hd">
+      <h3 id="rTitle">未选择</h3>
+      <span class="badge on_shelf" id="rBadge" style="display:none">已上架</span>
+      <button class="btn sm" onclick="clearSel()">收起</button>
+    </div>
+    <div class="body">
+
+      <div class="rpanel on" id="rpEmpty">
+        <div class="empty-r">
+          <div class="ico">&#9671;</div>
+          <div class="tx" id="rpEmptyText">从左侧选择一件商品，查看它在陈列里的样子</div>
+        </div>
+      </div>
+
+      <div class="rpanel" id="rpGoods">
+
+        <div class="preview-box gallery-only">
+          <div class="pv-lb">陈列视角 · 买家看到的样子</div>
+          <div class="pv-card">
+            <div class="pv-thumb">宣传图</div>
+            <div style="min-width:0;flex:1">
+              <div class="pv-title" id="pvTitle">便携榨汁杯 350ml</div>
+              <div class="pv-price" id="pvPrice">&#165;99.00</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="f">
+          <label>宣传图（首张为主图）</label>
+          <div class="up">拖拽图片到此处，或 <b>点击上传</b><br /><span style="font-size:11.5px">JPG/PNG/WebP · 单张 &#8804; 5MB</span></div>
+          <div class="mlis">
+            <div class="mli"><span class="main">主图</span><span class="x">&#215;</span>1</div>
+            <div class="mli"><span class="x">&#215;</span>2</div>
+            <div class="mli"><span class="x">&#215;</span>3</div>
+          </div>
+        </div>
+
+        <div class="f">
+          <label>商品标题</label>
+          <input class="field" id="gTitleIn" value="便携榨汁杯 350ml" style="width:100%" />
+        </div>
+
+        <div class="f">
+          <label>商品文案</label>
+          <textarea class="field" style="width:100%;height:70px;resize:vertical">一键启动 · 40 秒出汁 · USB 充电 · 露营通勤皆可用</textarea>
+          <div class="row" style="margin-top:7px">
+            <button class="ai-btn" onclick="aiCopy()">&#10024; AI 生成文案</button>
+            <span class="hint">可选风格：专业 / 口语 / 促销</span>
+          </div>
+          <div class="ai-out" id="aiCopyOut" style="display:none">
+            <div class="t">&#10024; AI 生成结果（口语风）</div>
+            <div>一杯鲜果汁，出门也能喝。<b>40 秒</b>快速出汁，<b>USB</b> 随充随用，350ml 刚好一人份——
+              办公桌、露营地、健身房，随手就能榨。食品级杯体，冲洗即净。</div>
+            <div class="acts">
+              <button class="btn sm primary" onclick="hide('aiCopyOut');toast('已采纳并写入文案')">采纳</button>
+              <button class="btn sm" onclick="aiCopy()">换一版</button>
+              <button class="btn sm" onclick="hide('aiCopyOut')">放弃</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="f">
+          <label>价格</label>
+          <div class="row">
+            <input class="field" id="priceIn" value="99.00" />
+            <button class="ai-btn" onclick="aiPrice()">&#10024; AI 定价</button>
+          </div>
+          <div class="hint" style="margin-top:6px">同价带商品均价 &#165;92</div>
+          <div class="ai-out" id="aiPriceOut" style="display:none">
+            <div class="t">&#10024; 定价建议：<b>&#165;99 ~ &#165;109</b></div>
+            <div>同类目主流区间 &#165;79&#8211;&#165;129；你的卖点（40 秒出汁 / USB 充电）强于 &#165;79 档。
+              按成本 &#165;38 计，建议 <b>&#165;99</b>（毛利 61.6%），首单可做 &#165;89 引流。
+              <span class="hint">（建议仅供参考，采纳与否由你决定）</span></div>
+            <div class="acts">
+              <button class="btn sm primary"
+                onclick="document.getElementById('priceIn').value='99.00';hide('aiPriceOut');toast('已采纳建议价 &#165;99.00')">采纳 &#165;99</button>
+              <button class="btn sm" onclick="hide('aiPriceOut')">保持原价</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="f admin-only">
+          <label>成本与库存</label>
+          <div class="row">
+            <span class="hint">成本</span><input class="field" value="38.00" style="max-width:80px" />
+            <span class="hint">库存</span><input class="field" value="3" style="max-width:66px" />
+            <span class="hint">预警</span><input class="field" value="10" style="max-width:66px" />
+          </div>
+          <div class="hint" style="margin-top:6px">毛利 <b>&#165;61.00</b>（61.6%）·
+            <span style="color:var(--danger)">库存 3 &lt; 阈值 10，已预警</span></div>
+        </div>
+
+        <div class="f admin-only">
+          <label>类目 / 状态</label>
+          <div class="row">
+            <select class="field" style="flex:1"><option>厨房小电</option><option>数码配件</option><option>户外</option></select>
+            <select class="field" style="flex:1"><option>已上架</option><option>已下架</option><option>草稿</option></select>
+          </div>
+        </div>
+
+        <div class="f gallery-only">
+          <label>陈列设置</label>
+          <div class="row" style="gap:12px">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+              <input type="checkbox" checked /> 置顶展示</label>
+            <span class="hint">当前排序 1 · 可用「编排模式」拖动调整</span>
+          </div>
+        </div>
+
+        <div class="split"></div>
+
+        <div class="minicard" style="margin-bottom:12px">
+          <div class="mc-hd">该商品的售后情况<span class="hint" style="margin-left:auto">近 30 天</span></div>
+          <div class="kv"><span>售后单量</span><b>4 单</b></div>
+          <div class="kv"><span>退货率</span><b style="color:var(--danger)">8.3%</b><span class="hint">（类目均值 3.1%）</span></div>
+          <div class="kv"><span>主要问题</span><b>包装破损 3 · 质量问题 1</b></div>
+          <div class="hint" style="margin-top:8px">
+            2 单已处理，1 单转人工，1 单待判定。
+            <a href="javascript:void(0)" onclick="go('aftersale')" style="color:var(--brand)">查看相关工单 &#8594;</a>
+          </div>
+          <div class="hint" style="margin-top:6px;color:var(--ai)">
+            提示：退货率高于类目均值，建议核对包装或补充说明。
+          </div>
+        </div>
+
+        <div class="minicard">
+          <div class="mc-hd">AI 在这件商品上的动作</div>
+          <div class="trace-item"><span class="d"></span><div>今天 10:42 改价 &#165;89 &#8594; <b>&#165;99</b>
+            <a href="javascript:void(0)" onclick="go('audit')" style="color:var(--brand)">可撤销</a></div></div>
+          <div class="trace-item"><span class="d"></span><div>今天 10:12 生成文案（你已采纳）</div></div>
+          <div class="trace-item"><span class="d"></span><div>昨天 16:30 从草稿上架</div></div>
+        </div>
+      </div>
+
+      <div class="rpanel" id="rpLog">
+        <div class="minicard" style="margin-bottom:14px">
+          <div class="mc-hd">本次变更</div>
+          <div class="kv"><span>时间</span><b id="lgTime">&#8212;</b></div>
+          <div class="kv"><span>来源</span><b id="lgWho">&#8212;</b></div>
+          <div class="kv"><span>动作</span><b id="lgAction">&#8212;</b></div>
+          <div class="kv"><span>对象</span><b id="lgTarget">&#8212;</b></div>
+        </div>
+        <div class="f">
+          <label>改了什么</label>
+          <div class="diff" id="lgDiff"><div class="drow"><span class="k">变更</span><span>&#8212;</span></div></div>
+        </div>
+        <div class="hint">撤销会把该字段恢复为变更前的值；<b>撤销本身也会记入日志</b>。</div>
+      </div>
+
+    </div>
+    <div class="foot" id="rFoot" style="display:none">
+      <button class="btn primary" id="rSaveBtn" onclick="toast('已保存')">保存</button>
+      <button class="btn" id="rResetBtn">重置</button>
+      <div style="margin-left:auto">
+        <button class="btn danger" id="rDelBtn" onclick="openDel('便携榨汁杯 350ml','&#165;99.00 · 3 张图片','删除')">删除商品</button>
+        <button class="btn" id="rUndoBtn" style="display:none" onclick="openUndo('价格 &#165;99.00 &#8594; &#165;89.00')">撤销这次改动</button>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<!-- ============ 浮动 AI 助手 ============ -->
+<div class="fab" id="fab">
+  <span>🤖</span><span class="dot"></span>
+  <span class="tip">AI 经营助手 · 点我或拖我</span>
+</div>
+
+<aside class="drawer" id="drawer">
+  <div class="dh">
+    <div class="ava">✨</div>
+    <div>
+      <b>AI 经营助手</b>
+      <div class="ctx">当前上下文：商品管理 · 已选中「便携榨汁杯 350ml」</div>
+    </div>
+    <div class="spacer"></div>
+    <button onclick="toggleCaps()" title="我能做什么">?</button>
+    <button onclick="newChat()" title="新对话">＋</button>
+    <button onclick="toggleDrawer(false)" title="关闭">×</button>
+  </div>
+
+  <div class="caps" id="caps">
+    <div class="cap-g">商品</div>
+    <div class="cap-l">
+      <span>查/新建/改商品</span><span>上下架</span><span>改价</span><span>删除（需确认）</span>
+      <span>生成文案</span><span>定价建议</span><span>批量改价</span>
+    </div>
+    <div class="cap-g">陈列</div>
+    <div class="cap-l"><span>调整展示顺序</span><span>置顶商品</span></div>
+    <div class="cap-g">售后</div>
+    <div class="cap-l"><span>查工单</span><span>看某商品的售后情况</span><span>退回智能体（需确认）</span></div>
+    <div class="hint" style="margin-top:8px">带「需确认」的动作，我会先停下来等你点头。</div>
+  </div>
+
+  <div class="chat" id="chat">
+    <div class="msg bot">我可以帮你管商品、排陈列、看售后。比如「把这件商品的文案重写一下」
+      「把户外类目都降 10%」「看看有没有待处理的售后」。</div>
+    <div class="msg me">把户外类目的商品都降价 10%</div>
+    <div class="msg bot">
+      我查了一下，「户外」类目下正在上架的有 <b>3 件</b>商品，降价后会是这样：
+      <div class="trace">
+        调用 <code>list_goods(category="户外", status="on_shelf")</code>
+      </div>
+      <div class="pend" style="margin-top:8px">
+        <div class="ttl">⚠️ 一次改动 3 件商品，请确认</div>
+        <div class="det">
+          <table>
+            <tr><td>露营折叠椅</td><td>¥139 → <b>¥125.10</b></td></tr>
+            <tr><td>便携气罐炉</td><td>¥89 → <b>¥80.10</b></td></tr>
+            <tr><td>折叠水桶 10L</td><td>¥45 → <b>¥40.50</b></td></tr>
+          </table>
+        </div>
+        <div class="acts">
+          <button class="btn sm danger" onclick="multiDecide(true)">确认全部执行</button>
+          <button class="btn sm" onclick="multiDecide(false)">取消</button>
+          <span class="hint" style="align-self:center">改完可在操作日志一键撤销</span>
+        </div>
+      </div>
+    </div>
+    <div class="msg me">那件下架的护眼台灯，直接删掉</div>
+    <div class="pend">
+      <div class="ttl">⚠️ 需要你确认后才能执行</div>
+      这是<b>不可撤销</b>的操作，我先停在这里：
+      <div class="det">删除「<b>护眼台灯（旧款）</b>」（¥180.00）<br />将同时删除 <b>2 张</b>图片，删除后无法恢复。</div>
+      <div class="acts">
+        <button class="btn sm danger" onclick="pendDecide(true)">确认删除</button>
+        <button class="btn sm" onclick="pendDecide(false)">取消</button>
+        <span class="hint" style="align-self:center">来自 <code>delete_goods(9)</code></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="chips">
+    <button onclick="askAI('帮我写商品文案')">帮我写文案</button>
+    <button onclick="askAI('给这个商品定价')">给这个商品定价</button>
+    <button onclick="askAI('列出低库存商品')">列出低库存</button>
+    <button onclick="askAI('看看这件商品的售后情况')">看这件商品的售后</button>
+  </div>
+
+  <div class="cin">
+    <textarea placeholder="用一句话告诉我要做什么…（Enter 发送）"></textarea>
+    <button class="btn primary" style="height:42px">发送</button>
+  </div>
+</aside>
+
+<div class="mask" id="mask">
+  <div class="dlg">
+    <div class="top">
+      <div class="ico">⚠️</div>
+      <div>
+        <h4 id="dlgTitle">确认删除商品？</h4>
+        <div class="txt">此操作<b>不可撤销</b>。删除后该商品会同时从「商品陈列」与「商品管理」中消失。</div>
+      </div>
+    </div>
+    <div class="box" id="dlgBox"></div>
+    <div class="acts">
+      <button class="btn" onclick="closeDel()">取消</button>
+      <button class="btn danger" onclick="closeDel();toast('已删除')">确认删除</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="note">原型 v2 · <b>静态数据</b> · 可点：切模块 / 批量勾选 / 编排模式拖拽 / 撤销 / 拖动 🤖</div>
+
+<script>
+function $(id){ return document.getElementById(id); }
+function hide(id){ $(id).style.display = 'none'; }
+function toast(msg){
+  var t = $('toast'); t.textContent = msg; t.classList.add('on');
+  clearTimeout(t._tm); t._tm = setTimeout(function(){ t.classList.remove('on'); }, 1800);
+}
+
+/* ---------- 模块切换 ---------- */
+var R = { mode: 'overview', goods: null, log: null };
+
+function go(view){
+  document.querySelectorAll('.side a').forEach(function(a){
+    a.classList.toggle('on', a.getAttribute('data-view') === view);
+  });
+  document.querySelectorAll('.view').forEach(function(v){ v.classList.remove('on'); });
+  $('v-' + view).classList.add('on');
+  if (view !== 'gallery') {
+    document.body.classList.remove('arrange');
+    if ($('arrangeToggle')) $('arrangeToggle').checked = false;
+    if ($('arrangeHint')) $('arrangeHint').style.display = 'none';
+  }
+  R.mode = view;
+  R.goods = null; R.log = null;
+  renderRight();
+}
+
+function renderRight(){
+  var pane = $('rightPane');
+  if (R.mode === 'overview' || R.mode === 'aftersale'){ pane.style.display = 'none'; return; }
+  pane.style.display = 'flex';
+  var isLog = (R.mode === 'audit');
+  var sel = isLog ? R.log : R.goods;
+  pane.setAttribute('data-mode', isLog ? 'log' : R.mode);
+
+  $('rpEmpty').classList.toggle('on', !sel);
+  $('rpGoods').classList.toggle('on', !isLog && !!sel);
+  $('rpLog').classList.toggle('on', isLog && !!sel);
+
+  var title = '未选择';
+  if (isLog && sel) title = '变更详情';
+  else if (!isLog && sel) title = (R.mode === 'gallery') ? '商品详情 · 陈列预览' : '商品详情 / 编辑';
+  $('rTitle').textContent = title;
+  $('rBadge').style.display = (!isLog && sel) ? '' : 'none';
+
+  var tips = {
+    gallery: '从左侧选择一件商品，查看它在陈列里的样子',
+    admin: '从左侧选择一件商品进行编辑',
+    audit: '从左侧选择一条日志，查看这次改了什么'
+  };
+  $('rpEmptyText').textContent = tips[R.mode] || '';
+
+  $('rFoot').style.display = sel ? 'flex' : 'none';
+  $('rSaveBtn').style.display = isLog ? 'none' : '';
+  $('rResetBtn').style.display = isLog ? 'none' : '';
+  $('rUndoBtn').style.display = isLog ? '' : 'none';
+  $('rDelBtn').style.display = (!isLog && R.mode === 'admin') ? '' : 'none';
+}
+
+function selectGoods(source, kind){
+  var title = '', price = '';
+  if (kind === 'row'){
+    var tds = source.querySelectorAll('td');
+    title = tds[3].textContent.trim();
+    price = tds[5].textContent.trim().replace(/[^0-9.]/g, '');
+    document.querySelectorAll('.tbl tr').forEach(function(tr){ tr.classList.remove('on'); });
+    source.classList.add('on');
+  } else {
+    var card = source.closest ? source.closest('.gcard') : source;
+    title = card.querySelector('.title').textContent.trim();
+    price = card.querySelector('.price').textContent.trim().replace(/[^0-9.]/g, '');
+    document.querySelectorAll('.gcard').forEach(function(c){ c.classList.remove('on'); });
+    card.classList.add('on');
+  }
+  R.goods = { title: title, price: price };
+  if ($('gTitleIn')) $('gTitleIn').value = title;
+  if ($('priceIn')) $('priceIn').value = price;
+  if ($('pvTitle')) $('pvTitle').textContent = title;
+  if ($('pvPrice')) $('pvPrice').textContent = '\u00a5' + price;
+  renderRight();
+}
+
+function selectLog(tr){
+  var tds = tr.querySelectorAll('td');
+  R.log = {
+    time: tds[0].textContent.trim(), who: tds[1].textContent.trim(),
+    action: tds[2].textContent.trim(), target: tds[3].textContent.trim(),
+    diff: tds[4].innerHTML
+  };
+  $('lgTime').textContent = R.log.time;
+  $('lgWho').textContent = R.log.who;
+  $('lgAction').textContent = R.log.action;
+  $('lgTarget').textContent = R.log.target;
+  $('lgDiff').innerHTML = '<div class="drow"><span class="k">\u53d8\u66f4</span><span>' + R.log.diff + '</span></div>';
+  document.querySelectorAll('#auditTbl tbody tr').forEach(function(x){ x.classList.remove('on'); });
+  tr.classList.add('on');
+  renderRight();
+}
+
+function clearSel(){ R.goods = null; R.log = null; renderRight(); }
+
+document.querySelectorAll('.side a').forEach(function(a){
+  a.onclick = function(){ go(a.getAttribute('data-view')); };
+});
+
+/* ---------- 批量操作 ---------- */
+function syncBulk(){
+  var n = document.querySelectorAll('.ckRow:checked').length;
+  $('bulkCount').textContent = n;
+  $('bulkbar').classList.toggle('on', n > 0);
+}
+function toggleAll(checked){
+  document.querySelectorAll('.ckRow').forEach(function(c){ c.checked = checked; });
+  syncBulk();
+}
+
+/* ---------- 陈列编排：模式开关 + 拖拽排序 ---------- */
+function toggleArrange(on){
+  document.body.classList.toggle('arrange', on);
+  $('arrangeHint').style.display = on ? 'block' : 'none';
+  if (on) toast('编排模式：拖动卡片调整顺序');
+}
+(function(){
+  var grid = $('galleryGrid');
+  var dragEl = null;
+  grid.addEventListener('dragstart', function(e){
+    if (!document.body.classList.contains('arrange')) { e.preventDefault(); return; }
+    dragEl = e.target.closest('.gcard'); if (dragEl) dragEl.classList.add('dragging');
+  });
+  grid.addEventListener('dragend', function(){
+    if (dragEl) dragEl.classList.remove('dragging'); dragEl = null;
+    document.querySelectorAll('.ordnum').forEach(function(n, i){ n.textContent = i + 1; });
+  });
+  grid.addEventListener('dragover', function(e){
+    if (!dragEl) return;
+    e.preventDefault();
+    var over = e.target.closest('.gcard');
+    if (!over || over === dragEl) return;
+    var cards = Array.prototype.slice.call(grid.querySelectorAll('.gcard'));
+    var from = cards.indexOf(dragEl), to = cards.indexOf(over);
+    if (from < to) grid.insertBefore(dragEl, over.nextSibling);
+    else grid.insertBefore(dragEl, over);
+  });
+  /* 卡片需可拖：编排模式下开启 */
+  document.querySelectorAll('.gcard').forEach(function(c){ c.draggable = true; });
+})();
+
+/* ---------- 操作日志筛选 ---------- */
+function filterAudit(v){
+  document.querySelectorAll('#auditTbl tbody tr').forEach(function(tr){
+    var src = tr.getAttribute('data-src');
+    tr.style.display = (v === 'all' || v === src) ? '' : 'none';
+  });
+}
+function openUndo(what){
+  var box = $('dlgBox');
+  $('dlgTitle').textContent = '确认撤销这次改动？';
+  box.innerHTML = '将恢复为：<b>' + what + '</b><br />撤销也会被记入操作日志。';
+  $('mask').classList.add('open');
+}
+
+/* ---------- 删除 / 撤销 弹窗 ---------- */
+function openDel(title, assets, kind){
+  $('dlgTitle').textContent = '确认' + (kind || '删除') + '？';
+  $('dlgBox').innerHTML = '对象：<b>' + title + '</b><br />' + assets;
+  $('mask').classList.add('open');
+}
+function closeDel(){ $('mask').classList.remove('open'); }
+$('mask').onclick = function(e){ if (e.target.id === 'mask') closeDel(); };
+
+/* ---------- 浮动 AI：拖动 + 点击展开 ---------- */
+(function(){
+  var fab = $('fab'), dragging = false, moved = false, ox = 0, oy = 0;
+  fab.addEventListener('pointerdown', function(e){
+    dragging = true; moved = false;
+    ox = e.clientX - fab.getBoundingClientRect().left;
+    oy = e.clientY - fab.getBoundingClientRect().top;
+    fab.setPointerCapture(e.pointerId);
+  });
+  fab.addEventListener('pointermove', function(e){
+    if (!dragging) return;
+    moved = true;
+    var x = Math.max(8, Math.min(window.innerWidth - fab.offsetWidth - 8, e.clientX - ox));
+    var y = Math.max(8, Math.min(window.innerHeight - fab.offsetHeight - 8, e.clientY - oy));
+    fab.style.left = x + 'px'; fab.style.top = y + 'px';
+    fab.style.right = 'auto'; fab.style.bottom = 'auto';
+  });
+  fab.addEventListener('pointerup', function(e){
+    dragging = false;
+    try { fab.releasePointerCapture(e.pointerId); } catch (err) {}
+    if (!moved) toggleDrawer(true);
+  });
+})();
+
+function toggleDrawer(open){
+  var d = $('drawer');
+  if (open === undefined) open = !d.classList.contains('open');
+  d.classList.toggle('open', open);
+  if (open) setTimeout(function(){ $('chat').scrollTop = 99999; }, 240);
+}
+function toggleCaps(){ $('caps').classList.toggle('on'); }
+function newChat(){
+  $('chat').innerHTML = '<div class="msg bot">新对话已开始。当前上下文：商品管理 · 已选中「便携榨汁杯 350ml」。</div>';
+}
+function askAI(text){
+  toggleDrawer(true);
+  var chat = $('chat');
+  var me = document.createElement('div'); me.className = 'msg me'; me.textContent = text;
+  chat.appendChild(me);
+  var bot = document.createElement('div'); bot.className = 'msg bot';
+  bot.innerHTML = '收到。我先确认一下你的意图，再决定调哪个工具（原型演示，此处不产生真实调用）。';
+  chat.appendChild(bot);
+  chat.scrollTop = 99999;
+}
+function pendDecide(ok){
+  var chat = $('chat');
+  var cards = chat.querySelectorAll('.pend');
+  if (cards.length) cards[cards.length - 1].remove();
+  var d = document.createElement('div'); d.className = 'msg bot';
+  d.innerHTML = ok
+    ? '已删除「护眼台灯（旧款）」。<div class="trace">调用 <code>delete_goods(9)</code> · 成功 · 已从商品陈列同步移除</div>'
+    : '已取消，商品未做任何改动。<div class="trace">动作 <code>pending#31</code> 已作废</div>';
+  chat.appendChild(d); chat.scrollTop = 99999;
+}
+function multiDecide(ok){
+  var chat = $('chat');
+  var cards = chat.querySelectorAll('.pend');
+  if (cards.length) cards[cards.length - 1].remove();
+  var d = document.createElement('div'); d.className = 'msg bot';
+  d.innerHTML = ok
+    ? '已把户外类目 3 件商品各降价 10%。<div class="trace">调用 <code>bulk_update_price</code> ×3 · 成功 · 可在操作日志一键撤销</div>'
+    : '已取消，3 件商品价格未变动。';
+  chat.appendChild(d); chat.scrollTop = 99999;
+}
+
+renderRight();
+
+/* ---------- AI 生成（原型只做显示） ---------- */
+function aiCopy(){ $('aiCopyOut').style.display = 'block'; }
+function aiPrice(){ $('aiPriceOut').style.display = 'block'; }
+</script>
+</body>
+</html>

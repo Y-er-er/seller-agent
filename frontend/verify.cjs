@@ -171,27 +171,38 @@ async function main() {
       check("问答视图渲染", false, String(err && err.message));
     }
 
-    // 真实调用问答接口：确认零模型调用 + 边界声明 + 口径库可读
+    // 真实调用问答接口：确认边界声明 + 口径库可读。
+    // ⚠️ 「是否调用模型」取决于 QA_LLM_POLISH：开启时**整段跳过**，
+    //    以免自动化验证本身触发计费调用（计费调用的验证由使用者自行运行）。
     try {
       const kbResp = await fetch(`${API_BASE}/api/qa/knowledge`);
       const kb = await kbResp.json();
       check("口径知识库接口可读", kbResp.status === 200 && (kb.total || 0) >= 10,
         `HTTP ${kbResp.status} total=${kb.total}`);
 
-      const resp = await fetch(`${API_BASE}/api/qa`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: "质量问题为什么不自动判定？" }),
-      });
-      const data = await resp.json();
-      check("问答接口返回 200", resp.status === 200, `HTTP ${resp.status}`);
-      check("问答结果声明不参与判定",
-        typeof data.boundary === "string" && data.boundary.includes("不参与资格判定"),
-        `boundary=${data.boundary}`);
-      check("问答默认不调用模型（零成本）", data.model_used === false, `model_used=${data.model_used}`);
-      check("问答命中质量红线口径",
-        (data.sources || []).some((s) => s.id === "KB-QUALITY-ALWAYS-HUMAN"),
-        `sources=${JSON.stringify(data.sources)}`);
+      const healthResp = await fetch(`${API_BASE}/api/health`);
+      const health = await healthResp.json();
+      const polishOn = !!(health.qa && health.qa.polish_enabled);
+
+      if (polishOn) {
+        console.log("[SKIP] 已开启问答润色（QA_LLM_POLISH=true）——跳过 /api/qa 在线调用，" +
+          "避免验证脚本产生计费调用；端点契约由离线测试与路由比对覆盖");
+      } else {
+        const resp = await fetch(`${API_BASE}/api/qa`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: "质量问题为什么不自动判定？" }),
+        });
+        const data = await resp.json();
+        check("问答接口返回 200", resp.status === 200, `HTTP ${resp.status}`);
+        check("问答结果声明不参与判定",
+          typeof data.boundary === "string" && data.boundary.includes("不参与资格判定"),
+          `boundary=${data.boundary}`);
+        check("问答未开启润色时不调用模型", data.model_used === false, `model_used=${data.model_used}`);
+        check("问答命中质量红线口径",
+          (data.sources || []).some((s) => s.id === "KB-QUALITY-ALWAYS-HUMAN"),
+          `sources=${JSON.stringify(data.sources)}`);
+      }
     } catch (err) {
       check("问答接口在线调用", false, String(err && err.message));
     }

@@ -33,7 +33,8 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from langgraph.types import Command
 from pydantic import BaseModel
 
@@ -45,8 +46,12 @@ from app.chat import state as chat_state
 from app.chat import tools as chat_tools
 from app.config import settings
 from app.config_validation import log_warnings
+from app.goods.service import GoodsError
+from app.assistant.routes import router as assistant_router
+from app.seller.routes import goods_error_handler
+from app.seller.routes import router as seller_router
 from app.db import connect, get_decisions_by_request, get_stats, list_decisions, run_sync
-from app.demo_seed import load_demo_orders
+from app.demo_seed import backfill_case_goods, demo_active, ensure_demo_order, load_demo_orders
 from app.dev_seed import apply_scenario, real_api_configured, scenario_options, suggest_amount
 from app.graph.builder import close_graph, get_graph
 from app.graph.queries import (
@@ -64,12 +69,75 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
+def _log_runtime_mode() -> None:
+    """启动期打印**当前运行模式**（几行，便于一眼确认环境态）。
+
+    为什么值得单独打：`DATA_SOURCE` 决定取数走演示夹具还是真实 API，
+    这是最容易"搞错环境"的一项配置（开发当生产、生产当演示都要命），必须让它在启动日志里显影。
+
+    ⚠️ 为什么用 `warning` 而不是 `info`：本项目未配置 logging handler，
+    Python 的 `logging.lastResort` 只放行 WARNING 及以上 —— 用 info 会**完全不显示**（实测踩到）。
+    模式行"看不见"等于没做，故统一用 warning（与 `config_validation.log_warnings` 同一做法）。
+    """
+    mode = settings.resolved_data_source
+    declared = (settings.data_source or "").strip().lower()
+    via = "显式配置" if declared in ("local", "remote") else "自动推断"
+
+    if mode == "local":
+        logger.warning(
+            "数据源模式 = local（%s）：取数走**进程内夹具**（演示数据，非真实业务数据）", via
+        )
+    else:
+        missing = [
+            name
+            for name, val in (
+                ("ORDER_API_BASE", settings.order_api_base),
+                ("LOGISTICS_API_BASE", settings.logistics_api_base),
+                ("AFTERSALE_API_BASE", settings.aftersale_api_base),
+            )
+            if not val
+        ]
+        if missing:
+            # 这是真问题：remote 却不配 base_url，取数会全失败（本层不会回落到夹具）
+            logger.error(
+                "数据源模式 = remote（%s）但 %s 未配置：对应取数将一律失败，**不会回落到夹具**",
+                via,
+                " / ".join(missing),
+            )
+        else:
+            logger.warning("数据源模式 = remote（%s）：取数走真实业务 API", via)
+
+    logger.warning(
+        "对象存储 = %s（COS 配置齐全：%s）",
+        (settings.storage_backend or "local").strip().lower(),
+        settings.storage_configured,
+    )
+
+    # 图像生成：同样属于"环境态必须可见"的一项（留空即未开通，生图端点会明确报错）
+    from app.llm import image_gen
+
+    logger.warning(
+        "图像生成 = %s（模型 %s / 尺寸 %s）",
+        "已启用" if image_gen.available() else "未启用（IMAGE_MODEL 留空或未配置密钥）",
+        settings.image_model or "—",
+        settings.image_size,
+    )
+
+
 async def lifespan(_app: FastAPI):
     """启动期自检：把配置中的语义冲突提前暴露到日志（不阻断启动）；
+    打印运行模式（数据源 / 存储）；
     注入演示假订单（仅本地 mock 模式），供买家 H5 扮演买家 + 卖家智能体自演演练；
     关闭期释放检查点连接（否则 aiosqlite 的非守护线程会让进程无法退出）。"""
     log_warnings(logger)
+    _log_runtime_mode()
     load_demo_orders()
+    # 历史工单补齐商品编号（商品 × 售后联动的关联键；幂等、失败不阻断启动）
+    await backfill_case_goods()
+    # 上次进程遗留的"执行中"任务标为中断 —— 后台协程随进程没了，不能假装还在跑
+    from app.db.task_repo import mark_interrupted
+
+    await mark_interrupted()
     yield
     await close_graph()
 
@@ -81,9 +149,21 @@ app = FastAPI(title="电商售后智能体", version="0.6.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    # ⚠️ 必须含 PATCH / DELETE：商品域用它们做「改商品 / 删商品」。
+    #    少了这两个方法时，跨源前端（file:// 双击打开）的请求会被浏览器直接拦掉，
+    #    而且报错在控制台里很隐蔽（表现为 fetch failed，看不出是 CORS）。
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# ------------------------------------------------------------
+# 卖家控制台（商品域）
+# 业务错误统一转成明确状态码 + 中文原因，不裸抛 500。
+# ------------------------------------------------------------
+app.add_exception_handler(GoodsError, goods_error_handler)
+app.include_router(seller_router)
+# AI 经营助手（阶段二）：工具注册表 + 待确认动作 + 对话循环
+app.include_router(assistant_router)
 
 # 查询类端点的分页上限，防止一次拉取过多（复核台/看板均为人工查阅场景）
 _MAX_PAGE_SIZE = 200
@@ -317,8 +397,8 @@ async def qa_ask(payload: QaPayload) -> dict[str, Any]:
     """口径问答：解释判定依据、回答规则口径问题。
 
     **边界**：本端点只做解释与释疑，不改变任何判定结论、不触发任何节点、不写任何状态。
-    默认零成本（确定性解释 + 关键词口径检索）；仅当 `QA_LLM_POLISH` 与 `LLM_ENABLED`
-    同时开启时才调用模型润色措辞（计费，纪律 10），返回值中的 `model_used` 可核对是否发生调用。
+    事实来自规则（确定性解释 + 关键词口径检索）；`QA_LLM_POLISH` 与 `LLM_ENABLED`
+    同时开启时才由模型润色措辞（**产生计费调用**），返回值中的 `model_used` 可核对是否发生调用。
     """
     question = (payload.question or "").strip()
     if not question:
@@ -337,9 +417,15 @@ async def qa_ask(payload: QaPayload) -> dict[str, Any]:
 
 
 class H5CreateCase(BaseModel):
-    """创建对话会话。"""
+    """创建对话会话。
+
+    `demo`：**演示模式**标记——仅当服务端 `DEMO_ANY_ORDER=true` 时生效（否则 403）。
+    命中时由 `demo_seed.ensure_demo_order()` 按订单号**确定性合成**订单/物流/画像事实，
+    响应体带 `demo.synthetic=true`；界面**必须**如实标注"合成数据"，不得伪装成真实订单。
+    """
 
     order_id: str
+    demo: bool = False
 
 
 class H5Message(BaseModel):
@@ -366,11 +452,27 @@ async def h5_create_case(payload: H5CreateCase) -> dict[str, Any]:
 
     会话与工单同体：`case_id = order_id`，与判定图 `thread_id`、审计检索键同值。
     闸门暂停时**拒绝新会话**并返回原因（不静默失败）。
+
+    `demo=true`（演示模式）：先确保该订单可被受理——未预置的订单号按**确定性夹具**注入事实。
+    服务端未开启（`DEMO_ANY_ORDER=false`）时明确 403，不静默降级为"数据不足"。
     """
+    demo_info: dict[str, Any] | None = None
+    if payload.demo:
+        if not settings.demo_any_order:
+            raise HTTPException(
+                status_code=403,
+                detail="服务端未启用「任意订单受理」（DEMO_ANY_ORDER=false）",
+            )
+        demo_info = ensure_demo_order(payload.order_id)
+
     try:
-        return await chat_session.create_session(payload.order_id)
+        result = await chat_session.create_session(payload.order_id)
     except chat_session.SessionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    if demo_info is not None:
+        result["demo"] = demo_info
+    return result
 
 
 @app.get("/api/h5/cases/{case_id}", dependencies=[Depends(_require_chat_enabled)])
@@ -579,6 +681,7 @@ async def h5_post_message_stream(case_id: str, payload: H5Message) -> StreamingR
                 "stop_reason": result.get("stop_reason"),
                 "tool_calls": len(result.get("tool_audits") or []),
                 "gate": result.get("gate"),
+                "notice": result.get("notice") or "",   # 接管等"非会话消息"的界面提示
                 "stream_mode": "segmented",   # 诚实标注：非 token 级流
             },
         )
@@ -624,6 +727,19 @@ class ConsoleReject(BaseModel):
     reason: str = ""
 
 
+class ConsoleMessage(BaseModel):
+    """管理员以人工身份给买家发一条消息。"""
+
+    text: str
+    author: str = ""
+
+
+class ConsoleClose(BaseModel):
+    """人工结案（可选附注）。"""
+
+    note: str = ""
+
+
 @app.get("/api/console/cases", dependencies=[Depends(_require_chat_enabled)])
 async def console_list_cases(status: str | None = Query(default=None)) -> dict[str, Any]:
     """收件箱列表（`status` 过滤工单状态；不传返回全部）。"""
@@ -650,9 +766,51 @@ async def console_dispatch(case_id: str) -> dict[str, Any]:
 
 @app.post("/api/console/cases/{case_id}/intervene", dependencies=[Depends(_require_chat_enabled)])
 async def console_intervene(case_id: str) -> dict[str, Any]:
-    """管理员介入（接管），暂停智能体自主。"""
+    """管理员介入（接管），暂停智能体自主（接管后智能体不再自动应答）。"""
     try:
         return await console.intervene(case_id)
+    except console.ConsoleError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@app.post("/api/console/cases/{case_id}/messages", dependencies=[Depends(_require_chat_enabled)])
+async def console_post_message(case_id: str, payload: ConsoleMessage) -> dict[str, Any]:
+    """管理员以**人工身份**直接回复买家（首次发言即接管）。"""
+    try:
+        return await console.post_human_message(case_id, payload.text, author=payload.author)
+    except console.ConsoleError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@app.post("/api/console/cases/{case_id}/takeover", dependencies=[Depends(_require_chat_enabled)])
+async def console_takeover(case_id: str) -> dict[str, Any]:
+    """明确接管：把「已转人工」的工单归属到人工。
+
+    用于修正历史数据里"已转人工、处理者却仍是智能体或为空"的工单。
+    """
+    try:
+        return await console.takeover(case_id)
+    except console.ConsoleError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@app.post("/api/console/cases/{case_id}/resume", dependencies=[Depends(_require_chat_enabled)])
+async def console_resume(case_id: str) -> dict[str, Any]:
+    """把「已转人工」的工单**退回智能体**继续处理。
+
+    瞬时故障（工具/模型不可用）排除后不必重开工单；买家主动要求人工时返回 409。
+    """
+    try:
+        return await console.resume_agent(case_id)
+    except console.ConsoleError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@app.post("/api/console/cases/{case_id}/close", dependencies=[Depends(_require_chat_enabled)])
+async def console_close(case_id: str, payload: ConsoleClose | None = None) -> dict[str, Any]:
+    """人工结案：管理员处理完毕后把工单置为已完结。"""
+    try:
+        return await console.close_case(case_id, note=(payload.note if payload else ""))
     except console.ConsoleError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
@@ -709,21 +867,41 @@ async def health() -> dict[str, Any]:
             "reachable": db_ok,
             "error": db_error,
         },
-        # 模型可用性：enabled=false 时即便密钥可读到也不会发起调用（纪律 10 的计费闸门）
+        # 模型可用性：总开关与密钥齐备才发起调用（这是"能调用"，不是"已调用"）
         "llm": {
             "enabled": settings.llm_enabled,
             "text_available": text_available(),
             "vision_available": vision_available(),
-            # 视觉的成本护栏一并暴露：便于核对"为什么没调用"（张数上限为 0 时等同关闭）
+            # 图片张数上限一并暴露：便于核对"为什么没调用"（上限为 0 时等同关闭视觉）
             "vision_max_images": settings.vision_max_images,
             "vision_include_buyer_note": settings.vision_include_buyer_note,
         },
-        # 口径问答：默认零成本；polish_enabled 为 true 且 llm.enabled 为 true 时才计费
+        # 口径问答：润色需 polish 与总开关同时开启（此时才产生计费调用）
         "qa": {
             "polish_enabled": settings.qa_llm_polish and settings.llm_enabled,
             "max_sources": settings.qa_max_sources,
         },
         "shadow_mode": settings.shadow_mode,
+        # 可插拔适配层：**当前实际跑在哪个模式** —— 开发期最该一眼看到的信息。
+        # mode=local 表示取数走进程内夹具（演示数据），remote 表示走真实业务 API。
+        "data_source": {
+            "mode": settings.resolved_data_source,
+            "declared": (settings.data_source or "").strip().lower() or "(自动推断)",
+            "bases": {
+                "order": bool(settings.order_api_base),
+                "logistics": bool(settings.logistics_api_base),
+                "profile": bool(settings.aftersale_api_base),
+            },
+        },
+        "storage": {
+            "backend": (settings.storage_backend or "local").strip().lower(),
+            "cos_configured": settings.storage_configured,
+        },
+        # 演示辅助（**非业务能力**）：任意订单受理是否可用；接入真实业务 API 后 active 自动为 false
+        "demo": {
+            "any_order": settings.demo_any_order,
+            "active": demo_active(),
+        },
         "checkpoint": settings.checkpoint_sqlite_path,
         # 对话入口（P1）：护栏参数与成本闸门状态。
         # 成本闸门**始终评估**（即便对话入口关闭），便于运维随时掌握当月等效消耗与是否已暂停。
@@ -788,3 +966,47 @@ async def dev_seed(payload: SeedPayload) -> dict[str, Any]:
     )
     apply_scenario(payload.order_id, payload.scenario, amount)
     return {"order_id": payload.order_id, "scenario": payload.scenario, "pay_amount": amount}
+
+
+# ============================================================
+# 根路径引导 + 前端静态托管
+# ============================================================
+# 说明：本服务只提供 API，界面是 frontend/ 下的**免构建静态页**。
+# 为免用户访问根路径撞 404、或纠结 file:// 打开，这里：
+#   1) 根路径 `/` 给出引导页（列出各页面入口）；
+#   2) 把 frontend/ 挂到 `/ui`，使 `http://127.0.0.1:8000/ui/console.html` 可直接访问（同源、无 CORS 问题）。
+
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+
+_ROOT_HTML = """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>商家售后智能体</title>
+<style>
+ body{font:15px/1.9 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:640px;margin:64px auto;padding:0 22px;color:#1f2329}
+ h1{font-size:20px;margin-bottom:4px} .ok{color:#15803d;font-size:13px}
+ code{background:#f4f5f7;padding:2px 6px;border-radius:4px;font-size:13px}
+ a{color:#2563eb;text-decoration:none} a:hover{text-decoration:underline}
+ li{margin:8px 0} .muted{color:#8a9099;font-size:13px}
+</style></head>
+<body>
+ <h1>卖家经营控制台 · 后端已启动</h1>
+ <div class="ok">✓ 服务运行中（本页由后端提供）</div>
+ <p>本服务只提供 <b>API</b>；界面是免构建静态页，直接从下面进入：</p>
+ <ul>
+  <li><b>卖家控制台</b>（主界面）：<a href="/ui/seller.html">/ui/seller.html</a></li>
+  <li><b>售后指挥台</b>（控制台的「售后」页内嵌的就是它）：<a href="/ui/console.html">/ui/console.html</a></li>
+  <li><b>买家 H5</b>：<a href="/ui/h5.html?order_id=DEMO001">/ui/h5.html?order_id=DEMO001</a></li>
+  <li><b>API 文档</b>：<a href="/docs">/docs</a>　|　<b>健康检查</b>：<a href="/api/health">/api/health</a></li>
+ </ul>
+ <p class="muted">也可直接双击 <code>frontend/seller.html</code>（file:// 打开，效果相同）。</p>
+</body></html>"""
+
+
+@app.get("/", include_in_schema=False)
+async def root_guide() -> HTMLResponse:
+    """根路径引导页（非 API）。"""
+    return HTMLResponse(_ROOT_HTML)
+
+
+if _FRONTEND_DIR.is_dir():
+    app.mount("/ui", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="ui")

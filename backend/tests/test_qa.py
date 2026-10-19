@@ -1,11 +1,11 @@
-"""口径问答测试（**全部离线**，默认零模型调用）。
+"""口径问答测试（**全部离线**，不产生任何计费调用）。
 
 覆盖目标：
 1. 知识库加载期严格校验（写错就应立刻失败，而不是静默失效）；
 2. 检索可复现、无匹配不硬答；
 3. 事实解释来自规则命中明细（含中文标签），不来自模型；
 4. **只读性**：问答前后，图状态（结论 / 命中规则）完全不变；
-5. **零成本**：未开启润色闸门时，`model_used` 恒为 False。
+5. **离线保证**：本测试强制关闭润色闸门，`model_used` 恒为 False（不产生计费调用）。
 
 运行（无需 MySQL、无网络、零费用）：
     D:\\Anaconda1\\envs\\pythonproject\\python.exe backend/tests/test_qa.py
@@ -225,7 +225,7 @@ async def amain() -> int:
         "audit_db_enabled": settings.audit_db_enabled,
     }
     settings.audit_db_enabled = False
-    settings.llm_enabled = False  # 全程默认关闭模型（零费用）
+    settings.llm_enabled = False  # 离线保证：测试全程关闭模型，不产生计费调用
 
     ckpt_path = PROJECT_ROOT / "data" / "test_qa_ckpt.sqlite"
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)

@@ -155,6 +155,114 @@ body {
   font-size: 12.5px;
 }
 
+/* 人工客服发言（管理员接管后）—— 与智能体区分，让买家知道"换人了" */
+.msg.human .bubble {
+  background: #FAEEDA;
+  border: 1px solid #FAC775;
+  border-top-left-radius: 4px;
+}
+.msg.human .bubble::before {
+  content: "人工客服";
+  display: block;
+  font-size: 11px;
+  color: #854F0B;
+  margin-bottom: 4px;
+}
+
+/* 演示模式标识 —— "不伪装数据"的界面落点，故用醒目暖色，不做浅色弱化 */
+.demo-badge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  background: #FAEEDA;
+  border: 1px solid #FAC775;
+  color: #633806;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+}
+.demo-badge b {
+  font-weight: 500;
+  background: #EF9F27;
+  color: #412402;
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 11.5px;
+}
+.demo-badge em { font-style: normal; color: #854F0B; }
+
+/* 开始区：订单号输入 + 演示模式开关 */
+.start-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+}
+.start-card .sc-title { font-size: 14px; font-weight: 500; margin-bottom: 2px; }
+.start-card .sc-row { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.start-card input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  font-size: 14px;
+  font-family: inherit;
+}
+.start-card .sc-hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 999px;
+  padding: 5px 13px 5px 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.switch i {
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: #D3D1C7;
+  position: relative;
+  transition: background .15s;
+}
+.switch i::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left .15s;
+}
+.switch.on { border-color: #EF9F27; color: #633806; }
+.switch.on i { background: #EF9F27; }
+.switch.on i::after { left: 14px; }
+
+/* 终态出口：会话转人工 / 结束后，给买家一条明确的出路 */
+.restart-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: #F1EFE8;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
 /* 金额卡片（结构化结论，避免只靠一段文字） */
 .amount-card {
   margin-top: 8px;

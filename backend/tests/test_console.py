@@ -1,7 +1,9 @@
 """商家售后指挥台服务测试 —— 假仓储，零外部调用。
 
 覆盖：工单状态流转（queued → agent_running → awaiting_confirm → resolved / escalated）、
-      list 过滤、get_detail 404、dispatch 非法状态 409、confirm 落确认、reject 转人工。
+      list 过滤、get_detail 404、dispatch 非法状态 409、confirm 落确认、reject 转人工、
+      **人工发消息（首次发言即接管、不消耗轮次、空内容拒绝）**、
+      **转人工后的三个出口（接管 / 退回智能体 / 人工结案，含"买家要求人工时拒绝退回"）**。
 """
 
 from __future__ import annotations
@@ -13,6 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import console  # noqa: E402
+from app.chat import session as chat_session  # noqa: E402
+from app.chat import state as chat_state  # noqa: E402
 
 _failures: list[str] = []
 
@@ -67,6 +71,13 @@ class FakeRepo:
 
     async def list_messages(self, case_id, limit=None):
         return [m for m in self.messages if m["case_id"] == case_id]
+
+    async def append_message(self, case_id, seq, role, content=None, attachments=None,
+                             tool_calls=None, guardrail_event=None):
+        if any(m.get("case_id") == case_id and m.get("seq") == seq for m in self.messages):
+            return False
+        self.messages.append({"case_id": case_id, "seq": seq, "role": role, "content": content})
+        return True
 
     async def list_slots(self, case_id):
         return [s for s in self.slots if s["case_id"] == case_id]
@@ -154,6 +165,88 @@ async def main() -> int:
     await console.intervene("C6")
     c6 = await fake.get_case("C6")
     check("C8 介入后 escalated + manual", c6["workflow_status"] == "escalated" and c6["assignee"] == "manual")
+    check("C8 介入落护栏", any(g["type"] == "intervened" for g in fake.guardrails))
+
+    # ---- C9 人工发消息：首次发言即接管 ----
+    chat_session.repo = fake  # 会话层的落库路径也要注入假仓储
+    fake.seed_case("C7", workflow_status="agent_running")
+    posted = await console.post_human_message("C7", "  我是人工客服，已为你受理  ", author="admin")
+    c7 = await fake.get_case("C7")
+    check("C9a 人工消息落库（角色 human，正文原样）",
+          any(m.get("role") == "human" and m.get("content") == "我是人工客服，已为你受理"
+              for m in fake.messages))
+    check("C9b 发送即接管（assignee=manual）", c7["assignee"] == "manual")
+    check("C9c 工单转 escalated", c7["workflow_status"] == "escalated")
+    check("C9d 落人工回复护栏事件",
+          any(g["type"] == "human_replied" for g in fake.guardrails))
+    check("C9e 回传完整消息列表供界面刷新", len(posted.get("messages") or []) >= 1)
+
+    # ---- C10 人工发消息不消耗轮次（轮次是"买家 ↔ 智能体"的往返计数）----
+    check("C10 人工发言不增加轮次", int(c7.get("round") or 0) == 0, f"实得 {c7.get('round')}")
+
+    # ---- C11 空内容 → 400（不得静默写一条空消息）----
+    try:
+        await console.post_human_message("C7", "   ")
+        check("C11 空消息 → 400", False, "未抛异常")
+    except console.ConsoleError as exc:
+        check("C11 空消息 → 400", exc.status_code == 400 and exc.code == "empty_message")
+
+    # ---- C12 接管：明确归属到人工（修正"已转人工但处理者不明"的历史工单）----
+    fake.seed_case("C8", workflow_status="escalated", status="ESCALATED", assignee=None)
+    await console.takeover("C8")
+    c8 = await fake.get_case("C8")
+    check("C12a 接管后 assignee=manual", c8["assignee"] == "manual", str(c8))
+    check("C12b 接管后工单仍为 escalated", c8["workflow_status"] == "escalated")
+    check("C12c 接管落护栏", any(g["type"] == "taken_over" for g in fake.guardrails))
+
+    # ---- C13 退回智能体：会话脱离终态 + 工单回 agent_running ----
+    fake.seed_case("C9", workflow_status="escalated", status="ESCALATED",
+                   assignee="manual", escalated_reason="tool_failed")
+    await console.resume_agent("C9")
+    c9 = await fake.get_case("C9")
+    check("C13a 会话脱离终态（ESCALATED → CLARIFYING）", c9["status"] == "CLARIFYING", str(c9["status"]))
+    check("C13b escalated_reason 已清空", not c9["escalated_reason"], repr(c9["escalated_reason"]))
+    check("C13c 工单回 agent_running + assignee=agent",
+          c9["workflow_status"] == "agent_running" and c9["assignee"] == "agent", str(c9))
+    check("C13d 会话已非终态（买家可继续发言）", not chat_state.is_terminal(c9["status"]))
+    check("C13e 落退回护栏", any(g["type"] == "resumed_to_agent" for g in fake.guardrails))
+
+    # ---- C14 买家主动要求人工 → 拒绝退回（买家意愿优先）----
+    fake.seed_case("C10", workflow_status="escalated", status="ESCALATED",
+                   escalated_reason="buyer_request")
+    try:
+        await console.resume_agent("C10")
+        check("C14 买家要求人工时退回 → 409", False, "未抛异常")
+    except console.ConsoleError as exc:
+        check("C14 买家要求人工时退回 → 409",
+              exc.status_code == 409 and exc.code == "buyer_wants_human", exc.code)
+    c10 = await fake.get_case("C10")
+    check("C14b 拒绝后状态未被改动（不得只改一半）",
+          c10["workflow_status"] == "escalated" and c10["status"] == "ESCALATED")
+
+    # ---- C15 非转人工工单不可退回 ----
+    fake.seed_case("C11", workflow_status="agent_running")
+    try:
+        await console.resume_agent("C11")
+        check("C15 非 escalated 不可退回 → 409", False, "未抛异常")
+    except console.ConsoleError as exc:
+        check("C15 非 escalated 不可退回 → 409",
+              exc.status_code == 409 and exc.code == "illegal_state", exc.code)
+
+    # ---- C16 人工结案 ----
+    fake.seed_case("C12", workflow_status="escalated", status="ESCALATED",
+                   escalated_reason="tool_failed")
+    await console.close_case("C12", note="已电话沟通处理完毕")
+    c12 = await fake.get_case("C12")
+    check("C16a 结案后 resolved", c12["workflow_status"] == "resolved", str(c12))
+    check("C16b 结案护栏带附注",
+          any(g["type"] == "closed_by_admin" and "电话沟通" in (g.get("detail") or "")
+              for g in fake.guardrails))
+    try:
+        await console.close_case("C12")
+        check("C16c 重复结案 → 409", False, "未抛异常")
+    except console.ConsoleError as exc:
+        check("C16c 重复结案 → 409", exc.status_code == 409)
 
     print(f"\n结果：{'全部通过' if not _failures else f'{len(_failures)} 项失败'}")
     if _failures:

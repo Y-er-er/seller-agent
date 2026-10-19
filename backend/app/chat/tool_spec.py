@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.chat.slots import CLAIM_TYPES, EXPECTATIONS, ISSUE_OBJECTS
+from app.chat.slots import CLAIM_DIRECTIONS, ISSUE_OBJECTS, ISSUE_REASONS
 
 # ============================================================
 # 工具名
@@ -126,32 +126,32 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "name": TOOL_SUBMIT_FOR_DECISION,
             "description": (
                 "把本工单提交规则引擎判定，返回结论与逐条依据。"
-                "调用前必须已收齐三个必填项：诉求分类、问题对象、期望方案；"
+                "调用前必须已收齐三个必填项：问题原因、问题对象、诉求方向；"
                 "缺任一项**不要调用**，应先向买家追问。金额与物流以系统数据为准，无需你提供。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "claim_type": {
+                    "issue_reason": {
                         "type": "string",
-                        "enum": list(CLAIM_TYPES),
-                        "description": "诉求分类（必填）：买家主张属于哪一类",
+                        "enum": list(ISSUE_REASONS),
+                        "description": "问题原因（必填）：为什么申请售后",
                     },
                     "issue_object": {
                         "type": "string",
                         "enum": list(ISSUE_OBJECTS),
                         "description": "问题对象（必填）：问题出在哪个对象上",
                     },
-                    "expectation": {
+                    "claim_direction": {
                         "type": "string",
-                        "enum": list(EXPECTATIONS),
-                        "description": "期望方案（必填）：买家希望怎么解决",
+                        "enum": list(CLAIM_DIRECTIONS),
+                        "description": "诉求方向（必填）：买家希望怎么处理——它决定最终是退款、补发还是换货",
                     },
                     "symptom": {"type": "string", "description": "问题现象（可选，简述）"},
                     "affected_qty": {"type": "string", "description": "影响数量（可选，如「2 件」）"},
                     "note": {"type": "string", "description": "补充说明（可选）"},
                 },
-                "required": ["claim_type", "issue_object", "expectation"],
+                "required": ["issue_reason", "issue_object", "claim_direction"],
             },
         },
     },

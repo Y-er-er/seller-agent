@@ -12,6 +12,10 @@
   A9  未授权工具名 → 白名单拒绝（**不依赖模型守规矩**）
   A10 编排端到端：handle_buyer_message（含落库与状态迁移；**结论不被模型覆盖**）
   A11 编排降级：模型不可用 → 兜底话术 + 转人工
+  A12 接管守卫：管理员接管后智能体**不再自动应答**（接管必须有阻断力）
+  A13 人工发言进入模型上下文（加 `[人工客服]` 前缀，不改落库原文）
+  A14 诉求方向接线：`claim_direction=补发` → 处置结果为 `reship`（补发可达）
+  A15 人工接管时终态豁免：会话已 ESCALATED 时买家消息仍被接收（否则人接不上话）
 """
 
 from __future__ import annotations
@@ -177,6 +181,7 @@ _ORIG = {
     "quota_expire": settings.free_quota_expire_date,
     "quota_baseline": settings.free_quota_used_baseline,
     "chat_enabled": settings.chat_enabled,
+    "llm_enabled": settings.llm_enabled,
 }
 
 
@@ -189,15 +194,22 @@ def restore() -> None:
     settings.free_quota_expire_date = _ORIG["quota_expire"]
     settings.free_quota_used_baseline = _ORIG["quota_baseline"]
     settings.chat_enabled = _ORIG["chat_enabled"]
+    settings.llm_enabled = _ORIG["llm_enabled"]
 
 
 def wire(fake: FakeChatRepo) -> FakeChatRepo:
-    """把假仓储接到全部持有模块级引用的模块。"""
+    """把假仓储接到全部持有模块级引用的模块。
+
+    ⚠️ **离线保证**：这里强制把 `llm_enabled` 置 False。否则 `model=None` 的用例
+    会经由 `llm_adapter.get_chat_model()` 构造出**真实模型**并发出计费调用——
+    自动化测试必须零计费，模型调用的验证由使用者自行运行。
+    """
     settings.mysql_uri = "mysql+pymysql://fake:fake@127.0.0.1:3306/fake"
     settings.price_input_per_1k = 0.0
     settings.price_output_per_1k = 0.0
     settings.free_quota_expire_date = ""
     settings.free_quota_used_baseline = 0
+    settings.llm_enabled = False
     session.repo = fake
     tools.repo = fake
     orchestrator.repo = fake
@@ -238,7 +250,7 @@ async def amain() -> int:
     model = ScriptedChatModel([
         turn_tool(tc("query_order")),
         turn_tool(tc("query_logistics")),
-        turn_tool(tc("submit_for_decision", claim_type="未收到货", issue_object="物流", expectation="仅退款")),
+        turn_tool(tc("submit_for_decision", issue_reason="未收到货", issue_object="物流", claim_direction="仅退款")),
         turn_text("好的，已为你处理。"),
     ])
     final = await agent.run_agent(model=model, ctx=make_ctx(decision_runner=fake_decision_runner),
@@ -253,7 +265,7 @@ async def amain() -> int:
 
     # ---------- A2 缺必填 → 提交被拒 → 追问 ----------
     model = ScriptedChatModel([
-        turn_tool(tc("submit_for_decision", claim_type="未收到货")),
+        turn_tool(tc("submit_for_decision", issue_reason="未收到货")),
         turn_text("请问问题出在哪里？"),
     ])
     final = await agent.run_agent(model=model, ctx=make_ctx(decision_runner=fake_decision_runner),
@@ -330,13 +342,13 @@ async def amain() -> int:
     tools._default_decision_runner = fake_decision_runner  # type: ignore[assignment]
     model = ScriptedChatModel([
         turn_tool(tc("query_order")),
-        turn_tool(tc("submit_for_decision", claim_type="未收到货", issue_object="物流", expectation="仅退款")),
+        turn_tool(tc("submit_for_decision", issue_reason="未收到货", issue_object="物流", claim_direction="仅退款")),
         turn_text("（模型话术不应覆盖结论）"),
     ])
     result = await orchestrator.handle_buyer_message("O2", "我没收到货", model=model, persist_usage=False)
     check("A10a 消息被接收", result["accepted"] is True)
     check("A10b 类型为结论", result["kind"] == "decision", f"实得 {result['kind']}")
-    check("A10c 回复由确定性模板渲染", "符合「仅退款」条件" in result["reply"], f"回复：{result['reply'][:40]}")
+    check("A10c 回复由确定性模板渲染", "符合处理条件" in result["reply"], f"回复：{result['reply'][:40]}")
     check("A10d 模型话术未覆盖结论", "不应覆盖" not in result["reply"])
     check("A10e 状态推进到 DECIDED", result["status"] == state.DECIDED, f"实得 {result['status']}")
     check("A10f 工具审计已落库", any(m.get("tool_calls") for m in fake2.messages))
@@ -351,6 +363,77 @@ async def amain() -> int:
     check("A11a 模型不可用 → 类型 model_unavailable", result["kind"] == "model_unavailable",
           f"实得 {result['kind']}")
     check("A11b 已转人工", (await fake3.get_case("O3"))["status"] == state.ESCALATED)
+
+    # ---------- A12 接管守卫（人工接管后智能体不得再自动应答） ----------
+    fake4 = wire(FakeChatRepo())
+    await fake4.create_case("O4", "O4", None)
+    await fake4.update_case("O4", status=state.CLARIFYING, last_seq=1,
+                            workflow_status="escalated", assignee=state.ASSIGNEE_MANUAL)
+    seed_order("O4", item_category="日用百货", pay_amount=39.0, logistics_status="signed")
+    guard_model = ScriptedChatModel([turn_text("智能体不应说话")])
+    result = await orchestrator.handle_buyer_message("O4", "在吗", model=guard_model, persist_usage=False)
+    check("A12a 接管后类型为 human_takeover", result["kind"] == "human_takeover", f"实得 {result['kind']}")
+    check("A12b 智能体未被调用", len(guard_model.seen_message_counts) == 0)
+    check("A12c 不产生智能体回复", result["reply"] == ""
+          and not any(m["role"] == "agent" for m in fake4.messages))
+    check("A12d 买家消息仍落库（人工必须看得到）",
+          any(m["role"] == "buyer" for m in fake4.messages))
+    check("A12e 接管提示只给界面、不落库",
+          bool(result["notice"]) and not any(m.get("content") == result["notice"] for m in fake4.messages))
+    check("A12f 留有接管守卫审计",
+          any(g["type"] == "human_takeover" for g in fake4.guardrails))
+
+    # ---------- A13 人工发言进入模型上下文 ----------
+    history = orchestrator.build_history("O5", [
+        {"role": "buyer", "content": "我要退货"},
+        {"role": "human", "content": "我是人工客服，正在为你处理"},
+    ])
+    check("A13a 人工发言映射为 assistant", history[-1]["role"] == "assistant",
+          f"实得 {[h['role'] for h in history]}")
+    check("A13b 人工发言带前缀标记", history[-1]["content"].startswith(orchestrator.HUMAN_PREFIX))
+    check("A13c 买家仍映射为 user", history[-2]["role"] == "user")
+
+    # ---------- A14 诉求方向接线：补发必须可达 ----------
+    fake5 = wire(FakeChatRepo())
+    await fake5.create_case("O6", "O6", None)
+    await fake5.update_case("O6", status=state.CLARIFYING, last_seq=1)
+    await fake5.append_message("O6", 1, "agent", "你好")
+    seed_order("O6", item_category="日用百货", pay_amount=39.0, logistics_status="signed")
+    seed_logistics("O6", logistics_status="signed", traces=["已签收"])
+    tools._default_decision_runner = fake_decision_runner  # type: ignore[assignment]
+    reship_model = ScriptedChatModel([
+        turn_tool(tc("submit_for_decision", issue_reason="错发漏发",
+                     issue_object="商品本身", claim_direction="补发")),
+        turn_text("已为你提交补发申请。"),
+    ])
+    result = await orchestrator.handle_buyer_message("O6", "发错货了，我要补发",
+                                                    model=reship_model, persist_usage=False)
+    check("A14a 结论已产出", result["kind"] == "decision", f"实得 {result['kind']}")
+    case6 = await fake5.get_case("O6") or {}
+    check("A14b 处置结果为 reship（补发可达）", case6.get("decision_result") == "reship",
+          f"实得 {case6.get('decision_result')}")
+    tools._default_decision_runner = _orig_runner  # type: ignore[assignment]
+
+    # ---------- A15 人工接管时，会话终态不得把买家挡在门外 ----------
+    fake6 = wire(FakeChatRepo())
+    await fake6.create_case("O7", "O7", None)
+    await fake6.update_case("O7", status=state.ESCALATED, last_seq=1,
+                            workflow_status="escalated", assignee=state.ASSIGNEE_MANUAL)
+    result = await orchestrator.handle_buyer_message("O7", "人工在吗", model=None, persist_usage=False)
+    check("A15a 终态 + 人工接管 → 消息仍被接收",
+          result["kind"] == "human_takeover", f"实得 {result['kind']}")
+    check("A15b 买家消息落库（人要看得到）",
+          any(m["role"] == "buyer" and m.get("content") == "人工在吗" for m in fake6.messages))
+    check("A15c 人工接管不消耗轮次",
+          int((await fake6.get_case("O7")).get("round") or 0) == 0)
+
+    fake7 = wire(FakeChatRepo())
+    await fake7.create_case("O8", "O8", None)
+    await fake7.update_case("O8", status=state.ESCALATED, last_seq=1)
+    result = await orchestrator.handle_buyer_message("O8", "在吗", model=None, persist_usage=False)
+    check("A15d 无人接管时终态仍拒收（守卫未被放松）",
+          result["kind"] == "guardrail" and result.get("code") == "closed",
+          f"实得 {result.get('kind')}/{result.get('code')}")
 
     restore()
     print("-" * 68)

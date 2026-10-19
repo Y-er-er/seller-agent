@@ -16,7 +16,7 @@ from app.tools.aftersale import (
     DisposalResult,
     aexecute_action,
 )
-from app.tools.http_client import aclose
+from app.adapters.http_client import aclose
 from app.tools.logistics import fetch_logistics, seed_logistics
 from app.tools.order import fetch_order, seed_order
 from app.tools.profile import fetch_profile, seed_profile

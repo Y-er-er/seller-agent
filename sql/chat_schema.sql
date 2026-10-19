@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS conversation_case (
     escalated_reason VARCHAR(32)     NULL                     COMMENT '转人工原因码：round_limit / msg_too_long / cost_paused / rule_to_human / tool_failed / buyer_request / session_timeout',
     workflow_status  VARCHAR(24)     NOT NULL DEFAULT 'queued' COMMENT '工单状态（指挥台）：queued / agent_running / awaiting_confirm / resolved / escalated',
     assignee         VARCHAR(16)     NULL                     COMMENT '处理者：agent（智能体）/ manual（管理员）',
+    goods_no         VARCHAR(64)     NULL                     COMMENT '该订单对应的商品编号（「商品 × 售后联动」的桥；受理时从订单事实带入，取不到留空）',
     decision_result  VARCHAR(24)     NULL                     COMMENT '判定处置结果：refund / reship / reject / manual / pending_evidence',
     decision_amount  DECIMAL(12,2)   NULL                     COMMENT '判定金额（退款金额等，元）',
     confirmed_by     VARCHAR(64)     NULL                     COMMENT '确认人（管理员）',
@@ -33,6 +34,7 @@ CREATE TABLE IF NOT EXISTS conversation_case (
     PRIMARY KEY (id),
     UNIQUE KEY uk_case (case_id)                             COMMENT '一个会话号唯一 —— 重复创建会被拒绝（入口幂等）',
     KEY idx_order (order_id),
+    KEY idx_goods_no (goods_no),
     KEY idx_status (status),
     KEY idx_timeout (timeout_at)
 ) ENGINE=InnoDB
@@ -47,7 +49,7 @@ CREATE TABLE IF NOT EXISTS conversation_message (
     id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT  COMMENT '自增主键',
     case_id         VARCHAR(64)     NOT NULL                 COMMENT '会话 = 工单号（= 受理号 = 判定图 thread_id）',
     seq             INT UNSIGNED    NOT NULL                 COMMENT '会话内序号，从 1 递增；决定展示顺序，也用于幂等',
-    role            VARCHAR(16)     NOT NULL                 COMMENT '角色：buyer（买家）/ agent（智能体）/ system（系统提示）',
+    role            VARCHAR(16)     NOT NULL                 COMMENT '角色：buyer（买家）/ agent（智能体）/ human（人工客服，管理员接管后发言）/ system（系统提示）',
     content         TEXT            NULL                     COMMENT '消息正文',
     attachments     JSON            NULL                     COMMENT '附件引用列表（对象存储 key / 本地路径）',
     tool_calls      JSON            NULL                     COMMENT '本轮工具调用摘要：工具名 / 入参摘要 / 结果摘要 / 耗时',
@@ -68,7 +70,7 @@ CREATE TABLE IF NOT EXISTS conversation_message (
 CREATE TABLE IF NOT EXISTS case_slot (
     id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT  COMMENT '自增主键',
     case_id      VARCHAR(64)     NOT NULL                 COMMENT '会话 = 工单号',
-    slot         VARCHAR(48)     NOT NULL                 COMMENT '槽位名（诉求分类 / 问题对象 / 问题现象 / 影响数量 / 期望方案 / 签收后时长 / 已提交材料 / 补充说明）',
+    slot         VARCHAR(48)     NOT NULL                 COMMENT '槽位名：issue_reason（为什么）/ issue_object（问题在哪）/ claim_direction（想要什么）/ symptom / affected_qty / signed_days / evidence / note',
     value        VARCHAR(512)    NULL                     COMMENT '抽取到的值 —— 属**推断**，绝不进入规则事实字典',
     confidence   DECIMAL(4,3)    NULL                     COMMENT '模型自报置信度 0.000~1.000',
     source_seq   INT UNSIGNED    NULL                     COMMENT '来源轮次（卷宗需能点回买家原话的那一轮）',

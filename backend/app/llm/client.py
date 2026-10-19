@@ -4,7 +4,7 @@
 设计约束（方案 §8）：
 - 模型**不参与任何阈值判定**；本模块只被 evidence / dispose / qa 三个节点调用。
 - `LLM_ENABLED=false` 时所有函数安全返回 None/False，调用方必须降级为规则或模板路径。
-- ⚠️ 纪律 10：本模块所有真实调用都会**产生计费**。默认闸门关闭（`llm_enabled=false`）。
+- ⚠️ 本模块所有真实调用都会**产生计费**；`LLM_ENABLED=false` 时不发生任何调用。
 """
 
 from __future__ import annotations
@@ -111,6 +111,11 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+#: 公开别名：跨模块复用（商品域 AI 定价建议也要解析模型返回的 JSON）。
+#: 保留私有名为兼容既有调用，两者指向同一函数。
+parse_json_object = _parse_json_object
+
+
 def _invoke_vision(image_refs: list[str], prompt: str, *, timeout: float) -> tuple[str | None, dict[str, Any]]:
     """同步调用视觉模型（在**线程池**中执行，避免阻塞事件循环）。
 
@@ -158,8 +163,8 @@ async def extract_evidence_signals(
 
     **不参与判定**：结果只写入 `EvidenceReport` 与审计，规则引擎完全不知道它的存在。
 
-    ⚠️ 纪律 10：本函数触发**计费**调用。未开启闸门时立刻返回 None（零调用）。
-    三重成本/保护措施：
+    ⚠️ 本函数触发**计费**调用；开关未开启时立刻返回 None（不发生调用）。
+    三重保护措施：
       1. `vision_available()` 闸门（总开关 + 密钥 + 张数上限）；
       2. 只接受 `http(s)://` 图片，且**张数上限** `VISION_MAX_IMAGES`；
       3. 超时 / 异常 / 非 200 / JSON 解析失败 → 一律返回 None，**绝不影响判定**。

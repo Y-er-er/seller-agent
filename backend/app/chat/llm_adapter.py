@@ -2,16 +2,17 @@
 
 为什么单独一层（三个理由，缺一不可）：
 
-1. **离线可测**：agentic 循环只依赖 `ChatModel` 协议。测试注入"脚本化桩"即可跑通
-   「模型自主选工具 → 多轮往复 → 提交判定 → 生成回复」**全链路，零模型调用**——
-   不用为测试花钱，这正是成本控制该待的地方（运行策略），而不是去改架构。
+1. **离线可测**：agentic 循环只依赖 `ChatModel` 协议。注入"脚本化桩"即可跑通
+   「模型自主选工具 → 多轮往复 → 提交判定 → 生成回复」**全链路，且不产生任何计费调用**——
+   自动化回归因此可以零成本长跑。⚠️ 这是**测试策略**，不是"少用模型"的理由：
+   真实运行按正常业务调用模型，成本是配置项（见「成本闸门」）。
 
 2. **模型自主的落点**：模型通过返回 `tool_calls` 自主表达"要调哪个工具、传什么参数"；
    循环据此执行并把结果回灌。**调用顺序、调用次数、是否追问、何时提交判定，全由模型决定**；
    代码只做安全边界（轮数 / 单轮工具数 / 成本闸门），**不替模型做决策**。
 
-3. 纪律 9：模型名与密钥来自 `.env`，本文件不硬编码；纪律 10：`LLM_ENABLED=false` 时
-   `get_chat_model()` 返回 `None`，调用方必须降级——**本模块永不擅自发起计费调用**。
+3. 模型名与密钥来自 `.env`，本文件不硬编码；`LLM_ENABLED=false` 时
+   `get_chat_model()` 返回 `None`，调用方必须降级。默认 `true` —— 模型**正常使用**。
 """
 
 from __future__ import annotations
@@ -120,8 +121,12 @@ def _to_langchain_messages(messages: list[dict[str, Any]]) -> list[Any]:
 class QwenChatModel:
     """千问 function-calling 模型。
 
-    ⚠️ 纪律 10：每次 `step()` 都会产生**计费**调用。`LLM_ENABLED=false` 时
-    `get_chat_model()` 不会返回本类实例，故本类不会在闸门关闭时被触发。
+    ⚠️ 每次 `step()` 都会产生**真实计费**调用；`LLM_ENABLED=false` 时
+    `get_chat_model()` 不会返回本类实例，故本类不会在开关关闭时被触发。
+
+    端点由 `ChatTongyi` 按模型名推断（`"vl" in name` 即走多模态端点），本层无法覆盖。
+    因此 `.env` 的 `LLM_TEXT_MODEL` **必须是纯文本模型**——配成多模态模型会稳定 400
+    （InvalidParameter: url error）。该约束已由 `config_validation` 在启动期点名。
     """
 
     def __init__(self, model_name: str | None = None) -> None:
@@ -146,7 +151,9 @@ class QwenChatModel:
             llm = self._ensure_bound(tools)
             result = await llm.ainvoke(_to_langchain_messages(messages))
         except Exception as exc:  # noqa: BLE001 —— 模型层异常统一上抛，由循环决定降级/重试
-            logger.warning("模型调用失败：%s: %s", type(exc).__name__, exc)
+            # 只记 debug：调用方（agent._model_step）会以业务语义记一条 warning，
+            # 这里若是 warning 就会与它重复打印同一条异常，徒增日志噪音。
+            logger.debug("模型调用失败：%s: %s", type(exc).__name__, exc)
             raise
 
         content = getattr(result, "content", "") or ""

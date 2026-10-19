@@ -23,7 +23,11 @@ var state = {
   apiBase: DEFAULT_API_BASE,
   caseId: "",
   orderId: "",
-  messages: [],        // [{role:'buyer'|'agent'|'system', content, seq}]
+  orderInput: "",      // 订单号输入框内容（重绘不丢）
+  order: null,         // 关联订单卡片数据（真实或演示夹具）
+  demoMode: false,     // 演示模式：任意订单号均按"订单存在"受理，事实为**合成数据**
+  demoInfo: null,      // 后端返回的演示夹具摘要（带 synthetic 标记）
+  messages: [],        // [{role:'buyer'|'agent'|'human'|'system', content, seq}]
   status: "",
   round: 0,
   maxRounds: 20,
@@ -38,6 +42,25 @@ var state = {
 };
 
 var MAX_MSG_CHARS = 200;
+
+//: 演示模式开关的本地持久化键（刷新后保持，便于反复测试）
+var DEMO_STORE_KEY = "refund.h5.demoMode";
+
+function readStoredDemo() {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(DEMO_STORE_KEY) === "1";
+  } catch (e) {
+    return false;   // file:// 或隐私模式下不可用：忽略，不影响功能
+  }
+}
+
+function storeDemo(on) {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(DEMO_STORE_KEY, on ? "1" : "0");
+    }
+  } catch (e) { /* 同上：持久化失败不影响本次使用 */ }
+}
 
 /* ---------- 工具 ---------- */
 
@@ -161,6 +184,46 @@ function renderAmountCard(amount) {
          '</div><div class="value">¥' + escapeHtml(value) + "</div></div>";
 }
 
+/**
+ * 演示模式标识 —— **必须显著**，让使用者始终知道眼前的数据是合成的。
+ * 这是"不伪装数据"这条红线的界面落点，不得弱化为浅色小字。
+ */
+function renderDemoBadge(st) {
+  if (!st.demoMode) return "";
+  var info = st.demoInfo && st.demoInfo.order;
+  var detail = info
+    ? (escapeHtml(info.item_category || "") + " · ¥" + escapeHtml(info.pay_amount) +
+       " · " + escapeHtml(info.logistics_text || info.logistics_status || ""))
+    : "";
+  return '<div class="demo-badge">' +
+      '<b>演示模式</b>' +
+      "<span>订单事实为合成数据，非真实订单</span>" +
+      (detail ? "<em>" + detail + "</em>" : "") +
+    "</div>";
+}
+
+/** 开始区（未建会话时显示）：订单号输入 + 演示模式开关。 */
+function renderStart(st) {
+  var on = !!st.demoMode;
+  return '<div class="start-card">' +
+      '<div class="sc-title">开始咨询</div>' +
+      '<div class="sc-row">' +
+        '<input id="h5-order" type="text" placeholder="填写订单号（如 TEST-001）" value="' +
+          escapeHtml(st.orderInput || st.orderId || "") + '" />' +
+        '<button class="btn primary" id="h5-start">开始</button>' +
+      "</div>" +
+      '<div class="sc-row">' +
+        '<button class="switch' + (on ? " on" : "") + '" id="h5-demo-toggle" role="switch" ' +
+          'aria-checked="' + (on ? "true" : "false") + '"><i></i><span>演示模式</span></button>' +
+        '<span class="sc-hint">' +
+          (on
+            ? "任意订单号都按「订单存在」受理；事实由订单号确定性合成，换个号即换一组数据"
+            : "关闭时只受理真实 / 已预置的订单号") +
+        "</span>" +
+      "</div>" +
+    "</div>";
+}
+
 function renderBasis(basis) {
   if (!basis || !basis.length) return "";
   var items = basis.map(function (b) { return "<li>" + escapeHtml(b) + "</li>"; }).join("");
@@ -168,7 +231,9 @@ function renderBasis(basis) {
 }
 
 function renderMessage(msg) {
-  var role = msg.role === "buyer" ? "buyer" : (msg.role === "system" ? "system" : "agent");
+  // 人工客服（管理员接管后发言）：沿用 agent 的版式，另加 human 类做视觉区分并标注身份
+  var role = msg.role === "buyer" ? "buyer"
+    : (msg.role === "system" ? "system" : (msg.role === "human" ? "human agent" : "agent"));
   var extra = "";
   if (msg.amount != null) extra += renderAmountCard(msg.amount);
   if (msg.basis && msg.basis.length) extra += renderBasis(msg.basis);
@@ -209,10 +274,10 @@ function renderTips(st) {
     tips.push({ level: "warn", text: st.gate.message || "对话入口已暂停。" });
   }
   if (st.escalated) {
-    tips.push({ level: "info", text: "本会话已转人工客服，后续回复以人工为准。" });
+    tips.push({ level: "info", text: "已转人工客服，人工会看到你后续的留言。" });
   }
-  if (st.ended && !st.escalated) {
-    tips.push({ level: "info", text: "本会话已结束。如需继续，请重新发起咨询。" });
+  if (st.ended) {
+    tips.push({ level: "info", text: "本会话已结束。可点下方「重新开始」换一个订单号继续咨询。" });
   }
   if (!tips.length) return "";
   return tips.map(function (t) {
@@ -220,11 +285,46 @@ function renderTips(st) {
   }).join("");
 }
 
+/**
+ * 终态出口 —— 会话进入转人工 / 已结束之后，必须给买家一条明确的出路。
+ *
+ * 为什么必须有：`case_id = order_id` 是入口幂等键，**同号重开会恢复同一条会话**；
+ * 没有这个出口，买家会被永久锁在终态页面上（实测踩到：DEMO001 转人工后页面完全卡死）。
+ */
+function renderRestart(st) {
+  if (!st.escalated && !st.ended) return "";
+  return '<div class="restart-row">' +
+      "<span>本会话" + (st.ended ? "已结束" : "已转人工") + "。换一个订单号即可开始新会话。</span>" +
+      '<button class="btn ghost" id="h5-restart">重新开始</button>' +
+    "</div>";
+}
+
+/** 清空本地会话态，回到开始区（不改后端任何数据）。 */
+function resetLocalSession() {
+  state.caseId = "";
+  state.messages = [];
+  state.status = "";
+  state.round = 0;
+  state.gate = null;
+  state.escalated = false;
+  state.ended = false;
+  state.order = null;
+  state.demoInfo = null;
+  state.attachments = [];
+  state.overLengthWarned = false;
+  state.lastError = "";
+  state.orderInput = "";
+  render();
+}
+
 function renderComposer(st) {
-  var locked = st.sending || st.escalated || st.ended;
+  // 无会话时也保持输入区存在（结构稳定），但不可用——必须先填订单号并「开始」。
+  // ⚠️ **转人工后不再锁输入**：人工接手期间买家仍要能补充信息，否则"转人工"只是单向告知。
+  var locked = st.sending || st.ended || !st.caseId;
   var disabled = locked ? " disabled" : "";
-  var hint = st.escalated ? "已转人工，输入已关闭"
-           : (st.ended ? "会话已结束" : (st.sending ? "正在发送…" : ""));
+  var hint = st.ended ? "会话已结束"
+           : (!st.caseId ? "请先填写订单号并点「开始」"
+           : (st.sending ? "正在发送…" : ""));
   var chips = st.attachments.length
     ? '<div class="toolbar"><span>' + st.attachments.map(function (n) {
         return '<span class="file-chip">📎 ' + escapeHtml(n) + "</span>";
@@ -262,9 +362,12 @@ function render() {
       renderRoundBar(state.round, state.maxRounds) +
     "</div>";
   var html = header +
+    renderDemoBadge(state) +
     renderOrderCard(state.order) +
+    (state.caseId ? "" : renderStart(state)) +
     '<div class="messages" id="h5-messages">' + renderMessages(state.messages) + "</div>" +
     '<div class="tips">' + renderTips(state) + "</div>" +
+    renderRestart(state) +
     renderComposer(state);
   root.innerHTML = html;
   return html;
@@ -289,7 +392,10 @@ function applyServerSnapshot(payload) {
   var s = (payload && payload.session) || {};
   if (s.status) state.status = s.status;
   if (s.round != null) state.round = s.round;
-  if (s.status === "ESCALATED" || s.status === "CLOSED") state.escalated = s.status === "ESCALATED";
+  // 终态按语义分开：ESCALATED = 等人工（仍可留言）；CLOSED = 已结束（输入关闭）。
+  // 此前把 CLOSED 也算作 escalated 且不置 ended，导致"已结束"的会话在前端完全看不出来。
+  if (s.status === "ESCALATED") { state.escalated = true; state.ended = false; }
+  else if (s.status === "CLOSED") { state.ended = true; state.escalated = false; }
   if (payload && payload.messages) {
     state.messages = payload.messages.map(function (m) {
       return { role: m.role, content: m.content, seq: m.seq };
@@ -300,21 +406,32 @@ function applyServerSnapshot(payload) {
 
 /* ---------- 业务动作 ---------- */
 
-/** 创建（或幂等恢复）会话。 */
+/** 创建（或幂等恢复）会话。开启演示模式时带上 `demo` 标记。 */
 async function createCase(orderId) {
-  if (!orderId) {
+  var id = String(orderId == null ? "" : orderId).trim();
+  if (!id) {
     setState({ lastError: "请填写订单号" });
     return false;
   }
-  setState({ orderId: orderId, lastError: "" });
-  var res = await api("/api/h5/cases", { method: "POST", body: { order_id: orderId } });
+  setState({ orderId: id, orderInput: id, lastError: "", demoInfo: null });
+  var res = await api("/api/h5/cases", {
+    method: "POST",
+    body: { order_id: id, demo: !!state.demoMode },
+  });
   if (!res.ok) {
-    // 503 = 对话入口未启用 / 闸门暂停；后端给了具体原因，直接透出
-    setState({ lastError: res.status === 503 ? ("对话入口暂不可用：" + res.error) : ("创建会话失败：" + res.error) });
+    // 403 = 服务端未开启演示模式；503 = 入口未启用 / 闸门暂停。两者都直接透出原因。
+    var prefix = res.status === 403 ? "演示模式不可用："
+               : (res.status === 503 ? "对话入口暂不可用：" : "创建会话失败：");
+    setState({ lastError: prefix + res.error });
     return false;
   }
   state.caseId = res.data.case_id;
   if (res.data.gate) state.gate = res.data.gate;
+  if (res.data.demo) {
+    // 演示夹具：把合成订单事实显示出来，让"订单存在"这件事可见、可核对
+    state.demoInfo = res.data.demo;
+    if (res.data.demo.order) state.order = res.data.demo.order;
+  }
   await loadCase();
   return true;
 }
@@ -386,7 +503,7 @@ async function sendMessage(text, options) {
       if (meta.round != null) state.round = meta.round;
       if (meta.status) state.status = meta.status;
       if (meta.gate) state.gate = meta.gate;
-      state.messages[bubbleIndex].content = "";
+      state.messages[bubbleIndex].content = meta.notice || "";
     } else if (ev.event === "delta") {
       state.messages[bubbleIndex].content += (ev.data && ev.data.text) || "";
       render();
@@ -427,7 +544,7 @@ function applySendResult(data) {
   if (d.round != null) state.round = d.round;
   if (d.status) state.status = d.status;
   if (d.gate) state.gate = d.gate;
-  var msg = { role: "agent", content: d.reply || "（无回复）" };
+  var msg = { role: "agent", content: d.reply || d.notice || "（无回复）" };
   if (d.decision && d.decision.refund_amount != null) {
     msg.amount = { label: "建议退款金额", value: d.decision.refund_amount };
   }
@@ -489,7 +606,17 @@ function bindEvents() {
     var el = e.target;
     if (!el || !el.id && !el.getAttribute) return;
     var id = el.id || "";
-    if (id === "h5-send") {
+    if (id === "h5-start") {
+      var box = document.getElementById("h5-order");
+      createCase(box ? box.value : "");
+    } else if (id === "h5-demo-toggle") {
+      // 演示模式开关：本地保存，下一次「开始」生效
+      state.demoMode = !state.demoMode;
+      storeDemo(state.demoMode);
+      render();
+    } else if (id === "h5-restart") {
+      resetLocalSession();
+    } else if (id === "h5-send") {
       var input = document.getElementById("h5-input");
       if (input) sendMessage(input.value).then(function () { input.value = ""; });
     } else if (id === "h5-upload") {
@@ -504,7 +631,13 @@ function bindEvents() {
 
   document.addEventListener("input", function (e) {
     var el = e.target;
-    if (!el || el.id !== "h5-input") return;
+    if (!el) return;
+    // 订单号输入：只记状态，不重绘（否则每敲一个字都会丢焦点）
+    if (el.id === "h5-order") {
+      state.orderInput = el.value;
+      return;
+    }
+    if (el.id !== "h5-input") return;
     var counter = document.getElementById("h5-counter");
     if (!counter) return;
     var len = (el.value || "").length;
@@ -525,6 +658,8 @@ async function init() {
   var q = readQuery();
   if (q.api) state.apiBase = q.api;
   state.quota = state.maxRounds;
+  state.demoMode = readStoredDemo();   // 演示模式：沿用上次选择，便于反复测试
+  state.orderInput = q.order_id || "";
   bindEvents();
   render();
   if (q.order_id) {

@@ -186,9 +186,26 @@ async function probeOnline(retries = 6, gapMs = 2000) {
     && composer.indexOf('id="h5-upload"') !== -1 && composer.indexOf('id="h5-escalate"') !== -1, composer);
   check("renderComposer 展示已上传材料条", composer.indexOf("a.png") !== -1);
 
-  const lockedComposer = sandbox.renderComposer({ sending: false, escalated: true, ended: false, attachments: [] });
-  check("已转人工时输入与发送被禁用",
-    lockedComposer.indexOf('id="h5-input" rows="1" placeholder="已转人工，输入已关闭" disabled') !== -1, lockedComposer);
+  const escComposer = sandbox.renderComposer({ sending: false, escalated: true, ended: false, attachments: [], caseId: "C1" });
+  check("已转人工时仍可留言（消息转给人工，不再锁死买家）",
+    escComposer.indexOf('id="h5-input"') !== -1 && escComposer.indexOf('id="h5-send" disabled') === -1, escComposer);
+
+  const closedComposer = sandbox.renderComposer({ sending: false, escalated: false, ended: true, attachments: [], caseId: "C1" });
+  check("会话已结束时输入关闭",
+    closedComposer.indexOf('placeholder="会话已结束" disabled') !== -1, closedComposer);
+
+  const noCaseComposer = sandbox.renderComposer({ sending: false, escalated: false, ended: false, attachments: [] });
+  check("未建会话时输入被禁用并提示先填订单号",
+    noCaseComposer.indexOf("请先填写订单号") !== -1
+    && noCaseComposer.indexOf('id="h5-send" disabled') !== -1, noCaseComposer);
+
+  check("终态提供「重新开始」出口（否则买家被永久锁在终态页）",
+    sandbox.renderRestart({ escalated: true }).indexOf("h5-restart") !== -1
+    && sandbox.renderRestart({ ended: true }).indexOf("h5-restart") !== -1);
+  check("非终态不显示「重新开始」",
+    sandbox.renderRestart({ escalated: false, ended: false }) === "");
+  const endedTips = sandbox.renderTips({ ended: true, lastError: "" });
+  check("renderTips 已结束给出重开指引", endedTips.indexOf("重新开始") !== -1, endedTips);
 
   const amountHtml = sandbox.renderAmountCard({ label: "建议退款金额", value: 50 });
   check("renderAmountCard 输出金额卡片", amountHtml.indexOf("¥50") !== -1 && amountHtml.indexOf("amount-card") !== -1, amountHtml);
@@ -208,6 +225,26 @@ async function probeOnline(retries = 6, gapMs = 2000) {
   check("render() 把内容写进容器", elements["h5"] && elements["h5"].innerHTML.indexOf("h5-header") !== -1);
   check("render() 显示轮次进度", html.indexOf("第 3/20 轮") !== -1, "");
 
+  // --- 演示模式开关与开始区 ---
+  const startOff = sandbox.renderStart({ orderInput: "TEST-001", demoMode: false });
+  check("renderStart 渲染订单号输入与开始按钮",
+    startOff.indexOf("h5-order") !== -1 && startOff.indexOf("h5-start") !== -1, startOff);
+  check("renderStart 关闭演示时说明受理范围",
+    startOff.indexOf("只受理真实") !== -1, startOff);
+  const startOn = sandbox.renderStart({ orderInput: "TEST-001", demoMode: true });
+  check("renderStart 开启演示 → 开关置 on 并说明任意订单号均可受理",
+    startOn.indexOf("switch on") !== -1 && startOn.indexOf("任意订单号") !== -1, startOn);
+  check("renderStart 回填订单号（重绘不丢输入）",
+    startOn.indexOf("TEST-001") !== -1, startOn);
+  check("renderDemoBadge 关闭时不渲染", sandbox.renderDemoBadge({ demoMode: false }) === "");
+  const badge = sandbox.renderDemoBadge({
+    demoMode: true,
+    demoInfo: { order: { item_category: "数码配件", pay_amount: 68, logistics_text: "已签收" } },
+  });
+  check("renderDemoBadge 显著标注合成数据（不伪装）",
+    badge.indexOf("演示模式") !== -1 && badge.indexOf("非真实订单") !== -1
+    && badge.indexOf("数码配件") !== -1, badge);
+
   /* ---------- ③ 集成（需后端） ---------- */
 
   console.log("\n########## ③ 集成（错误必须显式，不得静默）##########");
@@ -217,34 +254,52 @@ async function probeOnline(retries = 6, gapMs = 2000) {
   if (!online) {
     console.log("[SKIP] 后端未启动，跳过集成断言");
   } else {
-    // 后端可达时：入口未启用 → 必须拿到明确的 503 与原因（而不是 404/静默）
-    sandbox.state.apiBase = API_BASE;
-    sandbox.state.caseId = "";
-    sandbox.state.lastError = "";
-    const created = await sandbox.createCase("VERIFY_H5_ORDER");
-    check("入口未启用时 createCase 返回 false（不误报成功）", created === false);
-    check("入口未启用时给出明确错误文案",
-      typeof sandbox.state.lastError === "string" && sandbox.state.lastError.length > 0
-      && (sandbox.state.lastError.indexOf("入口") !== -1 || sandbox.state.lastError.indexOf("不可用") !== -1),
-      sandbox.state.lastError);
+    // 本段验证的是「入口关闭时的拒绝行为」。
+    // 入口开启时本段无从验证，且其中的 stream 端点会触发**真实对话**——
+    // 模型开启（LLM_ENABLED=true）时会因此产生**计费调用**，故整段跳过。
+    let chatEnabled = null;
+    try {
+      const hResp = await fetch(`${API_BASE}/api/health`);
+      const health = await hResp.json();
+      chatEnabled = !!(health.chat && health.chat.enabled);
+    } catch (e) {
+      chatEnabled = null;
+    }
 
-    // 三个 P1.3 端点：关闭状态下应 503（证明路由存在且受开关控制），不得 404
-    // ⚠️ 上传必须传真正的 Blob/File——`FormData.append` 不接受普通对象（测试自身曾因此报错）
-    const fakeFile = new File([Buffer.from("fake-image-bytes")], "x.png", { type: "image/png" });
-    for (const [label, fn] of [
-      ["attachments", () => sandbox.uploadAttachment(fakeFile)],
-      ["escalate", () => sandbox.escalate()],
-      ["stream", () => sandbox.sendMessage("测试", { stream: true })],
-    ]) {
+    if (chatEnabled) {
+      console.log("[SKIP] 对话入口已启用（CHAT_ENABLED=true）——本段验证的是「入口关闭时的拒绝行为」，");
+      console.log("       且 stream 端点会触发真实对话（模型开启时产生计费调用），故跳过。");
+      console.log("       如需验证关闭态：另起一个 CHAT_ENABLED=false 的实例，并令 VERIFY_API_BASE 指向它。");
+    } else {
+      // 后端可达时：入口未启用 → 必须拿到明确的 503 与原因（而不是 404/静默）
+      sandbox.state.apiBase = API_BASE;
+      sandbox.state.caseId = "";
       sandbox.state.lastError = "";
-      sandbox.state.caseId = "VERIFY_H5_ORDER";
-      sandbox.state.sending = false;
-      sandbox.state.escalated = false;
-      sandbox.state.ended = false;
-      sandbox.state.messages = [];
-      const res = await fn();
-      check(`P1.3 端点 ${label} 拒绝时给出明确提示（非静默）`,
-        res === false && sandbox.state.lastError.length > 0, `res=${res} err=${sandbox.state.lastError}`);
+      const created = await sandbox.createCase("VERIFY_H5_ORDER");
+      check("入口未启用时 createCase 返回 false（不误报成功）", created === false);
+      check("入口未启用时给出明确错误文案",
+        typeof sandbox.state.lastError === "string" && sandbox.state.lastError.length > 0
+        && (sandbox.state.lastError.indexOf("入口") !== -1 || sandbox.state.lastError.indexOf("不可用") !== -1),
+        sandbox.state.lastError);
+
+      // 三个 P1.3 端点：关闭状态下应 503（证明路由存在且受开关控制），不得 404
+      // ⚠️ 上传必须传真正的 Blob/File——`FormData.append` 不接受普通对象（测试自身曾因此报错）
+      const fakeFile = new File([Buffer.from("fake-image-bytes")], "x.png", { type: "image/png" });
+      for (const [label, fn] of [
+        ["attachments", () => sandbox.uploadAttachment(fakeFile)],
+        ["escalate", () => sandbox.escalate()],
+        ["stream", () => sandbox.sendMessage("测试", { stream: true })],
+      ]) {
+        sandbox.state.lastError = "";
+        sandbox.state.caseId = "VERIFY_H5_ORDER";
+        sandbox.state.sending = false;
+        sandbox.state.escalated = false;
+        sandbox.state.ended = false;
+        sandbox.state.messages = [];
+        const res = await fn();
+        check(`P1.3 端点 ${label} 拒绝时给出明确提示（非静默）`,
+          res === false && sandbox.state.lastError.length > 0, `res=${res} err=${sandbox.state.lastError}`);
+      }
     }
   }
 

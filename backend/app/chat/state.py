@@ -43,6 +43,29 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
 }
 
 # ============================================================
+# 参与者角色（会话消息维度）
+# ============================================================
+#
+# buyer —— 买家 / agent —— 智能体 / human —— 人工客服（管理员接管后以人工身份发言）
+#
+# ⚠️ `human` 是"人说的话"：**不得经任何模型改写**；只作会话原文留存，
+#    并在装配模型上下文时以 [人工客服] 前缀标示，避免模型把人的话当成自己说过的。
+
+ROLE_BUYER = "buyer"
+ROLE_AGENT = "agent"
+ROLE_HUMAN = "human"
+
+# ============================================================
+# 处理者（工单维度；与指挥台 console 对齐）
+# ============================================================
+#
+# 单一真相：`assignee` 的取值只在这里定义，console 与 orchestrator 都引用它。
+# 此前两处各写一份，导致"接管"只改了标签、对话通路无感知（接管不生效的根因之一）。
+
+ASSIGNEE_AGENT = "agent"
+ASSIGNEE_MANUAL = "manual"
+
+# ============================================================
 # 升级人工的触发源（每个都必须写明原因并落 guardrail_event）
 # ============================================================
 
@@ -116,14 +139,24 @@ class GuardVerdict:
     escalate_reason: str = "" # 需要转人工时给出原因码（否则空）
 
 
-def check_can_accept_message(*, status: str, round_used: int, gate_paused: bool) -> GuardVerdict:
+def check_can_accept_message(
+    *, status: str, round_used: int, gate_paused: bool, human_takeover: bool = False
+) -> GuardVerdict:
     """买家要发消息时，是否允许继续对话（迁移守卫）。
 
     三条硬条件（任一不满足即不放行）：
     1. 会话未处于终态；
     2. 成本闸门未暂停；
     3. 已用轮次 < 上限。
+
+    ⚠️ **例外：管理员已接管（`human_takeover=True`）时三条一律不适用。**
+    原因：转人工会把会话置为终态 ESCALATED，若照旧拒收，买家会被
+    "本次会话已结束"挡在门外 —— 人反而接不上话，与"随时接入"直接矛盾。
+    此时对话归人，智能体侧的护栏（终态 / 成本 / 轮数）都失去对象。
     """
+    if human_takeover:
+        return GuardVerdict(True, "human_takeover", "")
+
     if is_terminal(status):
         return GuardVerdict(False, "closed", MSG_SESSION_CLOSED, "")
 

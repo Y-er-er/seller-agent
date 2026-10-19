@@ -3,13 +3,23 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>商家售后指挥台</title>
+<title>售后指挥台</title>
 <link rel="stylesheet" href="console.css" />
+<script>
+  // ?embed=1：被「卖家控制台」以 iframe 内嵌时，隐藏自己的顶栏。
+  // 不隐藏的话会出现两条顶栏（外层控制台一条 + 内嵌页一条），视觉上很乱。
+  // 其余功能完全不变 —— 这是"售后模块本轮按当前实现原样嵌入"的落点。
+  if (new URLSearchParams(location.search).get("embed") === "1") {
+    document.documentElement.classList.add("embed");
+  }
+</script>
 </head>
 <body>
 <div class="topbar">
   <div class="brand">售后指挥台</div>
   <div class="conn" id="conn"><span class="dot"></span><span id="connText">连接中…</span></div>
+  <div class="live" id="live"><i></i><span id="liveText">实时刷新中</span></div>
+  <button id="btnLive">暂停实时</button>
   <button id="btnRefresh">刷新</button>
 </div>
 <div class="stage">

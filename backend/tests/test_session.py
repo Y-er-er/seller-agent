@@ -41,12 +41,13 @@ class FakeChatRepo:
         self.usages: list[dict] = []
 
     # ---- 会话 ----
-    async def create_case(self, case_id, order_id, timeout_at=None):
+    async def create_case(self, case_id, order_id, goods_no="", timeout_at=None):
         if case_id in self.cases:
             return False
         self.cases[case_id] = {
             "case_id": case_id, "order_id": order_id, "status": state.CREATED,
             "round": 0, "last_seq": 0, "escalated_reason": None, "timeout_at": timeout_at,
+            "goods_no": goods_no,
         }
         return True
 
@@ -279,8 +280,10 @@ async def amain() -> int:
 
     fake = wire(FakeChatRepo())
     await session.create_session("ORD-3")
-    settings.price_input_per_1k = 1.0  # 配置单价后，塞一条达预警线的用量
-    fake.usages.append({"case_id": None, "amount": 0.2, "created_at": datetime.now()})
+    settings.price_input_per_1k = 1.0  # 配置单价后，塞一条**略高于预警线**的用量
+    fake.usages.append(
+        {"case_id": None, "amount": settings.cost_warning_cny + 0.1, "created_at": datetime.now()}
+    )
     r = await session.append_buyer_message("ORD-3", "在吗")
     check("S6 成本暂停 → 拒绝并转人工",
           r["accepted"] is False and r["code"] == "cost_paused"

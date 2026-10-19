@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>卖家控制台</title>
+<!--
+  ============================================================
+  卖家经营控制台 —— 免构建静态页
+  ============================================================
+  · 打开方式一：双击本文件（file://）
+  · 打开方式二：后端已把 frontend/ 挂到 /ui，访问 http://127.0.0.1:8000/ui/seller.html
+  · 入口参数：?api=http://127.0.0.1:8001 可覆盖后端地址（默认 8000）
+
+  三栏结构：
+    左＝模块导航（概览 / 商品陈列 / 商品管理 / 售后 / 操作日志）
+    中＝主内容区（随模块切换）
+    右＝**上下文详情面板**（随模块与选中对象变化；概览与售后不显示）
+
+  右下角浮动图标为 AI 助手预留位（阶段二接入）。
+  ============================================================
+-->
+<link rel="stylesheet" href="seller.css" />
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">卖家控制台</div>
+  <div class="conn" id="conn"><span class="dot"></span><span id="connText">连接中…</span></div>
+  <div class="mode" id="modeChip" title="当前数据源模式（来自 /api/health）"></div>
+  <button id="btnShowRight" hidden>显示详情</button>
+  <button id="btnRefresh">刷新</button>
+</div>
+
+<div class="stage">
+  <aside class="side" id="side"></aside>
+  <section class="mid" id="mid"></section>
+  <aside class="right" id="right"></aside>
+</div>
+
+<div class="fab" id="fab" title="AI 经营助手 · 可拖动，点击展开">
+  <span>AI</span><span class="dot" id="fabDot" hidden></span>
+</div>
+
+<aside class="drawer" id="drawer">
+  <div class="dh">
+    <div class="ava">AI</div>
+    <div style="min-width:0">
+      <b>AI 经营助手</b>
+      <div class="ctx" id="aiCtx">—</div>
+    </div>
+    <div class="spacer"></div>
+    <button id="btnCaps" title="我能做什么">?</button>
+    <button id="btnNewChat" title="开始新对话">＋</button>
+    <button id="btnCloseDrawer" title="关闭">×</button>
+  </div>
+
+  <div class="caps" id="caps"></div>
+  <div class="chat" id="chat"></div>
+
+  <div class="cin">
+    <textarea id="chatInput" placeholder="用一句话告诉我要做什么…（Ctrl+Enter 发送）" rows="1"></textarea>
+    <button class="btn primary" id="btnSend">发送</button>
+  </div>
+</aside>
+
+<div class="mask" id="mask">
+  <div class="dlg">
+    <div class="top">
+      <div class="ico" id="dlgIco">!</div>
+      <div style="min-width:0">
+        <h4 id="dlgTitle">确认操作</h4>
+        <div class="txt" id="dlgText"></div>
+      </div>
+    </div>
+    <div class="box" id="dlgBox"></div>
+    <div class="acts">
+      <button class="btn" id="dlgCancel">取消</button>
+      <button class="btn danger" id="dlgOk">确认</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="seller.js"></script>
+</body>
+</html>

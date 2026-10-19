@@ -60,13 +60,13 @@ def _normalize(row: dict[str, Any]) -> dict[str, Any]:
 # ============================================================
 
 
-def _create_case(case_id: str, order_id: str, timeout_at: datetime | None) -> bool:
+def _create_case(case_id: str, order_id: str, goods_no: str, timeout_at: datetime | None) -> bool:
     try:
         with connect() as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO conversation_case (case_id, order_id, status, timeout_at)"
-                " VALUES (%s, %s, %s, %s)",
-                (case_id, order_id, "CREATED", timeout_at),
+                "INSERT INTO conversation_case (case_id, order_id, goods_no, status, timeout_at)"
+                " VALUES (%s, %s, %s, %s, %s)",
+                (case_id, order_id, goods_no or None, "CREATED", timeout_at),
             )
         return True
     except Exception as exc:  # noqa: BLE001 —— 唯一键冲突（重复创建）也走这里
@@ -74,10 +74,16 @@ def _create_case(case_id: str, order_id: str, timeout_at: datetime | None) -> bo
         return False
 
 
-async def create_case(case_id: str, order_id: str, timeout_at: datetime | None = None) -> bool:
-    """创建会话。`case_id` 唯一，重复创建返回 False（入口幂等）。"""
+async def create_case(
+    case_id: str, order_id: str, goods_no: str = "", timeout_at: datetime | None = None
+) -> bool:
+    """创建会话。`case_id` 唯一，重复创建返回 False（入口幂等）。
+
+    `goods_no` 由受理方从订单事实带入 —— 它是「商品 × 售后联动」的关联键，
+    取不到时留空（**不阻断受理**：售后不该因为没有商品关联而被卡住）。
+    """
     _require_uri()
-    return await run_sync(_create_case, case_id, order_id, timeout_at)
+    return await run_sync(_create_case, case_id, order_id, goods_no, timeout_at)
 
 
 def _get_case(case_id: str) -> dict[str, Any] | None:
@@ -180,6 +186,30 @@ async def update_case(
         case_id, status, escalated_reason, round_delta, last_seq, timeout_at,
         workflow_status, assignee, decision_result, decision_amount, confirmed_by, confirmed_at,
     )
+
+
+def _list_cases_by_goods(goods_no: str, limit: int) -> list[dict[str, Any]]:
+    """按商品编号查工单（「商品 × 售后联动」的数据来源）。
+
+    ⚠️ 本表**没有 seller_id 列**（售后域早于商品域），故只按 `goods_no` 过滤 ——
+    而 `goods_no` 本身已隐含卖家（同一卖家的编号唯一）。
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT case_id, order_id, status, workflow_status, assignee, escalated_reason, "
+            "decision_result, decision_amount, created_at, updated_at "
+            "FROM conversation_case WHERE goods_no=%s ORDER BY created_at DESC LIMIT %s",
+            (goods_no, limit),
+        )
+        rows = cur.fetchall()
+        columns = [d[0] for d in cur.description]
+    return [_normalize(dict(zip(columns, row))) for row in rows]
+
+
+async def list_cases_by_goods(goods_no: str, limit: int = 200) -> list[dict[str, Any]]:
+    """按商品编号查工单（按创建时间倒序）。"""
+    _require_uri()
+    return await run_sync(_list_cases_by_goods, goods_no, limit)
 
 
 def _list_cases_by_workflow(workflow_status: str | None, limit: int) -> list[dict[str, Any]]:

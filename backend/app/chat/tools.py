@@ -300,9 +300,9 @@ async def submit_for_decision(ctx: ToolContext, arguments: dict[str, Any]) -> To
     raw_slots = {
         key: arguments.get(key)
         for key in (
-            slots_mod.SLOT_CLAIM_TYPE,
+            slots_mod.SLOT_ISSUE_REASON,
             slots_mod.SLOT_ISSUE_OBJECT,
-            slots_mod.SLOT_EXPECTATION,
+            slots_mod.SLOT_CLAIM_DIRECTION,
             slots_mod.SLOT_SYMPTOM,
             slots_mod.SLOT_AFFECTED_QTY,
             slots_mod.SLOT_NOTE,
@@ -329,6 +329,7 @@ async def submit_for_decision(ctx: ToolContext, arguments: dict[str, Any]) -> To
         slots=cleaned,
         order=order,
         logistics=logistics,
+        claim_direction=cleaned.get(slots_mod.SLOT_CLAIM_DIRECTION),
         claim_images=ctx.claim_images,
         buyer_note=ctx.buyer_note,
         requested_amount=ctx.requested_amount,

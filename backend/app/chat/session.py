@@ -20,6 +20,7 @@ from typing import Any
 from app.chat import cost_gate, state
 from app.config import settings
 from app.db import chat_repo as repo
+from app.tools import fetch_order
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,20 @@ async def _require_case(case_id: str) -> dict[str, Any]:
 # ============================================================
 
 
+async def _resolve_goods_no(order_id: str) -> str:
+    """从订单事实里取出**商品编号**（「商品 × 售后联动」的关联键）。
+
+    ⚠️ 取不到就返回空串，**绝不阻断受理** —— 售后不该因为拿不到商品关联而无法建单。
+    真实业务里该字段由订单系统给出（见 docs/契约_外部数据源_v1.md §一）。
+    """
+    try:
+        snapshot = await fetch_order(order_id)
+    except Exception as exc:  # noqa: BLE001 —— 关联字段取不到是可接受的降级
+        logger.warning("取订单商品编号失败（不影响受理）：%s: %s", type(exc).__name__, exc)
+        return ""
+    return (getattr(snapshot, "goods_no", "") or "") if snapshot else ""
+
+
 async def create_session(order_id: str) -> dict[str, Any]:
     """创建（或幂等返回）一个会话。
 
@@ -70,7 +85,8 @@ async def create_session(order_id: str) -> dict[str, Any]:
 
     case_id = order_id  # 会话 = 工单；与判定图 thread_id 同值
     timeout_at = datetime.now() + timedelta(hours=settings.session_timeout_hours)
-    created = await repo.create_case(case_id, order_id, timeout_at)
+    goods_no = await _resolve_goods_no(order_id)
+    created = await repo.create_case(case_id, order_id, goods_no, timeout_at)
 
     if not created:
         # 已存在 → 幂等返回既有会话（重复发起同一订单的咨询不新建工单）
@@ -112,7 +128,12 @@ async def set_status(case_id: str, target: str, *, reason: str | None = None) ->
 
 
 async def escalate(case_id: str, reason: str) -> bool:
-    """转人工（终态）。必须带原因码，且**同时落护栏事件**以便统计与复盘。"""
+    """转人工（终态）。必须带原因码，且**同时落护栏事件**以便统计与复盘。
+
+    ⚠️ **同时把 `assignee` 置为 `manual`**：转人工的含义是"**有人接手**"。
+    此前只改会话状态，`assignee` 保持空 —— 指挥台显示"已转人工"却没有任何人被指派，
+    买家等的是一个不会出现的人（实测踩到：DEMO001 转人工后 assignee=None）。
+    """
     case = await repo.get_case(case_id)
     if case is None:
         return False
@@ -120,7 +141,40 @@ async def escalate(case_id: str, reason: str) -> bool:
         return True  # 已是终态，幂等返回（避免重复挂起）
 
     await repo.record_guardrail(case_id, reason, "转人工")
-    return await repo.update_case(case_id, status=state.ESCALATED, escalated_reason=reason)
+    return await repo.update_case(
+        case_id,
+        status=state.ESCALATED,
+        escalated_reason=reason,
+        assignee=state.ASSIGNEE_MANUAL,
+    )
+
+
+async def resume_from_escalation(case_id: str) -> dict[str, Any]:
+    """撤销转人工：把会话从终态 `ESCALATED` 拉回 `CLARIFYING`。
+
+    为什么需要：`ESCALATED` 是**终态**，此前没有任何出口——工单一旦转人工就"只进不出"，
+    管理员既不能结案也不能交回智能体（政策 C5 要求保留**撤销 / 召回**能力）。
+
+    三条边界（都是刻意的）：
+
+    1. **只对 `ESCALATED` 生效**：其它状态返回 `ok=False`，不搅动正常会话；
+    2. **`CLOSED` 不可复活**：真正结束的会话是另一条语义，只能重新发起咨询；
+    3. 清空 `escalated_reason` —— `repo.update_case` 用 `None` 表示"本字段不更新"，
+       故清空必须传**空串**（传 `None` 会静默保留旧值，这是本模块最易踩的一处）。
+
+    只改**会话维度**（`status` / `escalated_reason`）。`workflow_status` / `assignee` 属指挥维度，
+    由 `console` 层负责——两个状态机各自闭环，互不越界。
+    """
+    case = await _require_case(case_id)
+    if case["status"] == state.CLOSED:
+        return {"ok": False, "reason": "closed", "status": case["status"]}
+    if case["status"] != state.ESCALATED:
+        return {"ok": False, "reason": "not_escalated", "status": case["status"]}
+
+    ok = await repo.update_case(case_id, status=state.CLARIFYING, escalated_reason="")
+    if ok:
+        await repo.record_guardrail(case_id, "escalation_resumed", "撤销转人工，会话交回智能体")
+    return {"ok": ok, "reason": "", "status": state.CLARIFYING}
 
 
 # ============================================================
@@ -128,13 +182,16 @@ async def escalate(case_id: str, reason: str) -> bool:
 # ============================================================
 
 
-async def append_buyer_message(case_id: str, text: str) -> dict[str, Any]:
+async def append_buyer_message(case_id: str, text: str, *, human_takeover: bool = False) -> dict[str, Any]:
     """接收买家消息。返回裁决结果（不抛业务异常，除会话不存在）。
 
     裁决顺序（**顺序即优先级，不要调换**）：
     1. 迁移守卫：终态 / 成本暂停 / 轮数耗尽 → 按需转人工；
     2. 字数裁决：首次超长只提示（**不计轮次**），再犯转人工；
     3. 正常接收：写消息 → 轮次 +1 → （首条时）状态 CREATED → CLARIFYING。
+
+    `human_takeover=True` 表示**管理员已接管**：此时第 1 条守卫整体豁免、
+    且**不消耗轮次**（轮次是"买家 ↔ 智能体"的往返计数，人接手后智能体已退出该循环）。
     """
     case = await _require_case(case_id)
     gate = await cost_gate.precheck(ongoing=True)
@@ -143,6 +200,7 @@ async def append_buyer_message(case_id: str, text: str) -> dict[str, Any]:
         status=case["status"],
         round_used=int(case["round"]),
         gate_paused=gate.paused,
+        human_takeover=human_takeover,
     )
     if not guard.allowed:
         if guard.escalate_reason:
@@ -174,16 +232,22 @@ async def append_buyer_message(case_id: str, text: str) -> dict[str, Any]:
     seq = int(case["last_seq"]) + 1
     await repo.append_message(case_id, seq, "buyer", text)
 
-    # 首条买家消息即离开 CREATED（其余状态保持不变）
-    target_status = state.CLARIFYING if case["status"] == state.CREATED else None
-    await repo.update_case(case_id, status=target_status, round_delta=1, last_seq=seq)
+    # 首条买家消息即离开 CREATED（其余状态保持不变）；人工接管时不推进状态、不计轮次
+    target_status = (
+        state.CLARIFYING
+        if (case["status"] == state.CREATED and not human_takeover)
+        else None
+    )
+    await repo.update_case(
+        case_id, status=target_status, round_delta=0 if human_takeover else 1, last_seq=seq
+    )
 
     return {
         "accepted": True,
         "code": "",
         "message": "",
         "seq": seq,
-        "round": int(case["round"]) + 1,
+        "round": int(case["round"]) + (0 if human_takeover else 1),
         "max_rounds": settings.max_rounds,
         "gate": gate.to_dict(),
     }
@@ -198,6 +262,23 @@ async def append_agent_message(
     ok = await repo.append_message(
         case_id, seq, "agent", text, tool_calls=tool_calls, guardrail_event=guardrail_event
     )
+    if ok:
+        await repo.update_case(case_id, last_seq=seq)
+    return {"ok": ok, "seq": seq}
+
+
+async def append_human_message(case_id: str, text: str) -> dict[str, Any]:
+    """写入**人工客服**（管理员接管后）的发言。
+
+    与 `append_agent_message` 的三点差异（都是刻意的）：
+
+    1. 角色为 `human`，且**正文原样落库，不经任何模型改写**——人的意志不得被复述；
+    2. **不消耗轮次**——轮次是"买家 ↔ 智能体"的往返计数，人工发言不属于该循环；
+    3. **不设终态限制**——"管理员可随时接入"的字面含义就是人在任何时候都能说话。
+    """
+    case = await _require_case(case_id)
+    seq = int(case["last_seq"]) + 1
+    ok = await repo.append_message(case_id, seq, state.ROLE_HUMAN, text)
     if ok:
         await repo.update_case(case_id, last_seq=seq)
     return {"ok": ok, "seq": seq}

@@ -7,6 +7,7 @@
   T4  金额收敛：主张金额超过实付 → 收敛为实付；未主张 → 默认全额
   T5  冲突检测：买家陈述 vs 权威数据冲突 → 记录且**以权威为准**
   T6  物理隔离：槽位键**不在**规则事实字典（FACT_FIELDS）
+  T7  诉求方向接线：`claim_direction` → `RefundRequest.claim_type`（补发必须可达）
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.chat import slots  # noqa: E402
-from app.models import LogisticsInfo, LogisticsStatus, OrderSnapshot, RefundReason  # noqa: E402
+from app.models import ClaimType, LogisticsInfo, LogisticsStatus, OrderSnapshot, RefundReason  # noqa: E402
 from app.rules.facts import FACT_FIELDS  # noqa: E402
 
 failures: list[str] = []
@@ -44,28 +45,28 @@ def main() -> None:
 
     # ---------- T1 清洗 ----------
     cleaned = slots.clean_slots({
-        "claim_type": "未收到货",
-        "claim_type_x": "not_a_slot",          # 未知键 → 丢弃
-        "issue_object": "不存在的对象",         # 枚举越界 → 丢弃
-        "expectation": "仅退款",
+        "issue_reason": "未收到货",
+        "claim_type": "not_a_slot",             # 旧键名 → 未知键，丢弃
+        "issue_object": "不存在的对象",          # 枚举越界 → 丢弃
+        "claim_direction": "仅退款",
         "symptom": " 破了一个角 ",
         "note": "x" * 200,                      # 超长 → 截断
     })
-    check("T1a 未知键被丢弃", "claim_type_x" not in cleaned)
+    check("T1a 未知键被丢弃", "claim_type" not in cleaned)
     check("T1b 枚举越界被丢弃", "issue_object" not in cleaned, f"实得 {cleaned.get('issue_object')!r}")
-    check("T1c 正常值保留", cleaned.get("claim_type") == "未收到货")
+    check("T1c 正常值保留", cleaned.get("issue_reason") == "未收到货")
     check("T1d 空白被裁剪", cleaned.get("symptom") == "破了一个角")
     check("T1e 超长被截断", len(cleaned.get("note", "")) == slots.MAX_SLOT_VALUE_CHARS)
 
     # ---------- T2 必填校验 ----------
-    missing = slots.missing_required({"claim_type": "无理由"})
-    check("T2a 缺两项必填", set(missing) == {"issue_object", "expectation"}, f"实得 {missing}")
+    missing = slots.missing_required({"issue_reason": "无理由"})
+    check("T2a 缺两项必填", set(missing) == {"issue_object", "claim_direction"}, f"实得 {missing}")
     check("T2b 齐备时为空", slots.missing_required({
-        "claim_type": "无理由", "issue_object": "商品本身", "expectation": "仅退款"
+        "issue_reason": "无理由", "issue_object": "商品本身", "claim_direction": "仅退款"
     }) == [])
 
     # ---------- T3 装配（权威字段） ----------
-    good = {"claim_type": "无理由", "issue_object": "商品本身", "expectation": "仅退款"}
+    good = {"issue_reason": "无理由", "issue_object": "商品本身", "claim_direction": "仅退款"}
     asm = slots.assemble_request(
         order_id="O1", slots=good, order=_order(pay=88.5, cat="数码"),
         logistics=_logistics(LogisticsStatus.IN_TRANSIT),
@@ -85,7 +86,7 @@ def main() -> None:
           f"实得 {asm2.request.claim_amount if asm2.request else None}")
 
     # ---------- T5 冲突检测 ----------
-    conflict_slots = {"claim_type": "未收到货", "issue_object": "物流", "expectation": "仅退款"}
+    conflict_slots = {"issue_reason": "未收到货", "issue_object": "物流", "claim_direction": "仅退款"}
     asm3 = slots.assemble_request(
         order_id="O1", slots=conflict_slots, order=_order(), logistics=_logistics(LogisticsStatus.SIGNED)
     )
@@ -98,11 +99,37 @@ def main() -> None:
 
     # ---------- T6 物理隔离 ----------
     overlap = {
-        slots.SLOT_CLAIM_TYPE, slots.SLOT_ISSUE_OBJECT, slots.SLOT_EXPECTATION,
+        slots.SLOT_ISSUE_REASON, slots.SLOT_ISSUE_OBJECT, slots.SLOT_CLAIM_DIRECTION,
         slots.SLOT_SYMPTOM, slots.SLOT_AFFECTED_QTY, slots.SLOT_SIGNED_DAYS,
         slots.SLOT_EVIDENCE, slots.SLOT_NOTE,
     } & set(FACT_FIELDS)
     check("T6 槽位不进规则事实字典", not overlap, f"重叠：{overlap}")
+
+    # ---------- T7 诉求方向接线（补发可达的**代码级**保证） ----------
+    check("T7a 仅退款 → REFUND",
+          slots.direction_to_claim_type("仅退款") == ClaimType.REFUND)
+    check("T7b 补发 → RESHIP",
+          slots.direction_to_claim_type("补发") == ClaimType.RESHIP)
+    check("T7c 换货 → EXCHANGE",
+          slots.direction_to_claim_type("换货") == ClaimType.EXCHANGE)
+    check("T7d 未知/缺失 → REFUND（显式回落）",
+          slots.direction_to_claim_type("") == ClaimType.REFUND
+          and slots.direction_to_claim_type(None) == ClaimType.REFUND)
+
+    reship_slots = {"issue_reason": "错发漏发", "issue_object": "商品本身", "claim_direction": "补发"}
+    asm5 = slots.assemble_request(
+        order_id="O1", slots=reship_slots, order=_order(), logistics=_logistics(LogisticsStatus.SIGNED)
+    )
+    check("T7e 装配写入诉求方向（补发）",
+          bool(asm5.request) and asm5.request.claim_type == ClaimType.RESHIP,
+          f"实得 {asm5.request.claim_type if asm5.request else None}")
+
+    # 方向也可由显式参数覆盖（供编排层传参）
+    asm6 = slots.assemble_request(
+        order_id="O1", slots=reship_slots, order=_order(), logistics=None, claim_direction="仅退款"
+    )
+    check("T7f 显式 claim_direction 优先",
+          bool(asm6.request) and asm6.request.claim_type == ClaimType.REFUND)
 
     print("-" * 68)
     print(f"结果：{'全部通过' if not failures else '存在失败'}")

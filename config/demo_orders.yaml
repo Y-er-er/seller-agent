@@ -16,8 +16,15 @@
 #
 # 字段：
 #   logistics_status: not_signed（未签收）/ signed（已签收）/ in_transit（运输中）
-#   profile: 买家画像（信用分 / 90 天退款率 / 90 天退款笔数）
-#   note: 仅供人看的场景说明（代码不使用）
+#   goods_no:         该订单对应的**商品编号**（指向卖家控制台里的商品）
+#   profile:          买家画像（信用分 / 90 天退款率 / 90 天退款笔数）
+#   note:             仅供人看的场景说明（代码不使用）
+#
+# ⚠️ 关于 goods_no：商品由卖家自建、订单来自外部系统，两者本无关联 ——
+#    本字段是「商品 × 售后联动」的**唯一桥梁**（没有它就算不出"这个商品退货率多少"）。
+#    这里的取值是**演示分配**：把假订单挂到演示商品上，好让售后统计有数据可看。
+#    真实业务应由订单系统给出该字段（见 docs/契约_外部数据源_v1.md）。
+#    当前演示商品：G-0001 便携榨汁杯 / G-0002 快充数据线 / G-0003 硅胶折叠水壶
 # ============================================================
 version: "1"
 
@@ -25,6 +32,7 @@ demo_orders:
   # ---- 未签收 + 未收到货 + 小额 → 自动退款（R2）----
   - order_id: DEMO001
     item_category: 蓝牙耳机 Pro 2
+    goods_no: G-0002
     pay_amount: 39
     logistics_status: not_signed
     traces: ["已揽收", "运输中"]
@@ -34,6 +42,7 @@ demo_orders:
   # ---- 已签收 + 称未收到 → 要求补证（R3）----
   - order_id: DEMO002
     item_category: 手机壳
+    goods_no: G-0001
     pay_amount: 199
     logistics_status: signed
     traces: ["已揽收", "已签收"]
@@ -43,6 +52,7 @@ demo_orders:
   # ---- 小额 + 高信用 + 低退款率 → 自动退款（R4）----
   - order_id: DEMO003
     item_category: 快充数据线 2 米
+    goods_no: G-0002
     pay_amount: 30
     logistics_status: signed
     traces: ["已揽收", "已签收"]
@@ -52,6 +62,7 @@ demo_orders:
   # ---- 高频退款风险 → 转人工（R5）----
   - order_id: DEMO004
     item_category: 收纳盒
+    goods_no: G-0001
     pay_amount: 120
     logistics_status: signed
     traces: ["已揽收", "已签收"]
@@ -61,6 +72,7 @@ demo_orders:
   # ---- 错发漏发 + 诉求补发 + 有举证 → 自动补发（R9）----
   - order_id: DEMO005
     item_category: 保温杯 500ml
+    goods_no: G-0003
     pay_amount: 89
     logistics_status: signed
     traces: ["已揽收", "已签收"]
@@ -70,6 +82,7 @@ demo_orders:
   # ---- 大额 + 质量主张 → 转人工（R1 + R7）----
   - order_id: DEMO006
     item_category: 护眼台灯
+    goods_no: G-0001
     pay_amount: 1800
     logistics_status: signed
     traces: ["已揽收", "已签收"]

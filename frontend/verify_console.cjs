@@ -59,8 +59,14 @@ function makeSandbox() {
       querySelector: () => makeEl(),
       createElement: () => makeEl(),
       body: makeEl(),
+      // 指挥台在模块顶层注册了一个 click 委托（用于「关联商品」跳转），
+      // mock 必须提供它，否则加载即抛错 —— 真实浏览器里当然存在。
+      addEventListener: () => {},
     },
   };
+  // 真实浏览器里 `window` 就是全局对象；console.js 的跨模块跳转要用 `window.parent`
+  sandbox.window = sandbox;
+  sandbox.parent = sandbox;
   vm.createContext(sandbox);
   return { sandbox, elements };
 }
@@ -110,9 +116,10 @@ async function probeOnline(retries = 6, gapMs = 2000) {
       const norm = normalizePath(raw);
       check(`路由存在：${norm}`, routes.includes(norm), `后端无此路由（共 ${routes.length} 条）`);
     }
-    // 反向：六个指挥台端点必须在路由表里
+    // 反向：指挥台端点必须在路由表里（含人工发言）
     ["/api/console/cases", "/api/console/cases/{}", "/api/console/cases/{}/dispatch",
-     "/api/console/cases/{}/intervene", "/api/console/cases/{}/confirm", "/api/console/cases/{}/reject"]
+     "/api/console/cases/{}/intervene", "/api/console/cases/{}/messages",
+     "/api/console/cases/{}/confirm", "/api/console/cases/{}/reject"]
       .forEach((need) => check(`后端已实现：${need}`, routes.includes(need)));
   }
 
@@ -167,9 +174,13 @@ async function probeOnline(retries = 6, gapMs = 2000) {
     { role: "buyer", content: "<script>alert(1)</script>" },
     { role: "agent", content: "好的" },
     { role: "system", content: "管理员确认" },
+    { role: "human", content: "我是人工客服" },
   ]);
-  check("renderMessages 区分三种角色", msgs.indexOf("msg buyer") !== -1 && msgs.indexOf("msg agent") !== -1 && msgs.indexOf("msg system") !== -1, msgs);
+  check("renderMessages 区分四种角色", msgs.indexOf("msg buyer") !== -1 && msgs.indexOf("msg agent") !== -1 && msgs.indexOf("msg system") !== -1 && msgs.indexOf("msg human") !== -1, msgs);
+  check("renderMessages 标注人工客服身份", msgs.indexOf("人工客服") !== -1, msgs);
   check("renderMessages 对买家内容转义（防注入）", msgs.indexOf("<script>") === -1 && msgs.indexOf("&lt;script&gt;") !== -1, msgs);
+  check("renderComposer 提供人工发言入口", sandbox.renderComposer({ workflow_status: "escalated" }).indexOf("humanMsg") !== -1);
+  check("renderComposer 已完结不再显示", sandbox.renderComposer({ workflow_status: "resolved" }) === "");
 
   // --- 动作日志 ---
   const acts = sandbox.collectActionLog([
@@ -183,8 +194,8 @@ async function probeOnline(retries = 6, gapMs = 2000) {
   check("renderActionLog 无审计返回空串", sandbox.renderActionLog([{ role: "agent", content: "x" }]) === "");
 
   // --- 槽位 ---
-  const slotHtml = sandbox.renderSlots([{ slot: "claim_type", value: "未收到货", confidence: 0.9, source_seq: 1 }]);
-  check("renderSlots 映射槽位中文名 + 值 + 置信度", slotHtml.indexOf("诉求分类") !== -1 && slotHtml.indexOf("未收到货") !== -1 && slotHtml.indexOf("90%") !== -1, slotHtml);
+  const slotHtml = sandbox.renderSlots([{ slot: "issue_reason", value: "未收到货", confidence: 0.9, source_seq: 1 }]);
+  check("renderSlots 映射槽位中文名 + 值 + 置信度", slotHtml.indexOf("问题原因") !== -1 && slotHtml.indexOf("未收到货") !== -1 && slotHtml.indexOf("90%") !== -1, slotHtml);
 
   // --- 证据 ---
   check("collectEvidence 从 evidence 槽位拆分", JSON.stringify(sandbox.collectEvidence([{ slot: "evidence", value: "a.jpg,b.jpg" }])) === JSON.stringify(["a.jpg", "b.jpg"]));
@@ -206,6 +217,11 @@ async function probeOnline(retries = 6, gapMs = 2000) {
     const h = sandbox.renderOpBar({ workflow_status: "queued" });
     return h.indexOf("指派智能体") !== -1 && h.indexOf("自己处理") !== -1;
   })());
+  // 模型未启用时，待处理工单应提示"指派将转人工"，避免误判"智能体无用"
+  sandbox.state.modelAvailable = false;
+  check("操作区·模型未启用时提示「指派将转人工」",
+    sandbox.renderOpBar({ workflow_status: "queued" }).indexOf("未启用模型") !== -1);
+  sandbox.state.modelAvailable = null;
   check("操作区·处理中 介入", sandbox.renderOpBar({ workflow_status: "agent_running" }).indexOf("介入") !== -1);
   check("操作区·待确认补发 确认补发 + 驳回", (function () {
     const h = sandbox.renderOpBar({ workflow_status: "awaiting_confirm", decision_result: "reship" });
@@ -213,18 +229,68 @@ async function probeOnline(retries = 6, gapMs = 2000) {
   })());
   check("操作区·待确认拒绝 确认拒绝", sandbox.renderOpBar({ workflow_status: "awaiting_confirm", decision_result: "reject" }).indexOf("确认拒绝") !== -1);
   check("操作区·已完结 归档提示", sandbox.renderOpBar({ workflow_status: "resolved" }).indexOf("已完结") !== -1);
-  check("操作区·已转人工 接管提示", sandbox.renderOpBar({ workflow_status: "escalated" }).indexOf("已转人工") !== -1);
+  // 转人工后的三个出口：此前该分支只渲染一句提示，导致工单"只进不出"（既不能结案也不能交回智能体）
+  const opEsc = sandbox.renderOpBar({ workflow_status: "escalated", escalated_reason: "tool_failed" });
+  check("操作区·已转人工 提供 接管/退回智能体/人工结案 三个出口",
+    opEsc.indexOf("接管") !== -1 && opEsc.indexOf("退回智能体") !== -1
+    && opEsc.indexOf("人工结案") !== -1, opEsc);
+  check("操作区·已转人工 三个动作各自带 data-op",
+    opEsc.indexOf('data-op="takeover"') !== -1 && opEsc.indexOf('data-op="resume"') !== -1
+    && opEsc.indexOf('data-op="close"') !== -1, opEsc);
+  const opBuyerReq = sandbox.renderOpBar({ workflow_status: "escalated", escalated_reason: "buyer_request" });
+  check("操作区·买家主动要求人工 时不提供可点的「退回智能体」（禁用 + 说明）",
+    opBuyerReq.indexOf('data-op="resume"') === -1 && opBuyerReq.indexOf("退回智能体") !== -1
+    && opBuyerReq.indexOf("买家主动要求人工") !== -1, opBuyerReq);
+  check("操作区·待确认 可随时介入",
+    sandbox.renderOpBar({ workflow_status: "awaiting_confirm", decision_result: "refund" }).indexOf("intervene") !== -1);
+
+  // --- 实时刷新与人工发言草稿 ---
+  const digA = { case: { case_id: "C1", status: "DECIDED", workflow_status: "escalated", round: 1, assignee: "manual" }, messages: [{ seq: 1 }] };
+  const digB = { case: { case_id: "C1", status: "DECIDED", workflow_status: "escalated", round: 1, assignee: "manual" }, messages: [{ seq: 1 }] };
+  check("detailSignature 内容相同则签名相同",
+    sandbox.detailSignature(digA) === sandbox.detailSignature(digB));
+  check("detailSignature 新消息使签名变化",
+    sandbox.detailSignature(digA)
+    !== sandbox.detailSignature({ case: digA.case, messages: [{ seq: 1 }, { seq: 2 }] }));
+  check("detailSignature 状态变化使签名变化",
+    sandbox.detailSignature(digA)
+    !== sandbox.detailSignature({ case: Object.assign({}, digA.case, { workflow_status: "resolved" }), messages: [{ seq: 1 }] }));
+  check("detailSignature 空详情返回空串", sandbox.detailSignature(null) === "");
+
+  sandbox.state.composerDraft = "已经人工回复一半";
+  check("renderComposer 带入未发送草稿（实时刷新不丢字）",
+    sandbox.renderComposer({ workflow_status: "agent_running" }).indexOf("已经人工回复一半") !== -1);
+  sandbox.state.composerDraft = "";
 
   // --- 详情整体 ---
   const detail = sandbox.renderDetail({
     case: { case_id: "C1", order_id: "O1", status: "DECIDED", round: 2, workflow_status: "awaiting_confirm", decision_result: "refund", decision_amount: 199, assignee: "agent" },
     messages: [{ role: "buyer", content: "包裹破损" }],
-    slots: [{ slot: "claim_type", value: "未收到货", confidence: 0.9, source_seq: 1 }],
+    slots: [{ slot: "issue_reason", value: "未收到货", confidence: 0.9, source_seq: 1 }],
     guardrails: [],
   });
   check("renderDetail 输出完整面板（工单/对话/结论/操作）",
     detail.indexOf("O1") !== -1 && detail.indexOf("包裹破损") !== -1 && detail.indexOf("同意退款") !== -1 && detail.indexOf("确认退款") !== -1, detail.slice(0, 80));
   check("renderDetail 空详情给占位", sandbox.renderDetail(null).indexOf("请从左侧选择") !== -1);
+
+  // --- 阶段四：关联商品（商品 × 售后联动的「售后 → 商品」方向）---
+  const withGoods = sandbox.renderDetail({
+    case: { case_id: "DEMO001", order_id: "DEMO001", status: "ESCALATED",
+            workflow_status: "escalated", goods_no: "G-0002", round: 1 },
+    messages: [], slots: [], guardrails: []
+  });
+  check("工单详情显示关联商品且可点击",
+    withGoods.indexOf("G-0002") !== -1 && withGoods.indexOf("data-goods-link") !== -1,
+    withGoods.slice(0, 200));
+  const noGoods = sandbox.renderDetail({
+    case: { case_id: "DEMO009", order_id: "DEMO009", status: "ESCALATED",
+            workflow_status: "escalated", round: 0 },
+    messages: [], slots: [], guardrails: []
+  });
+  check("订单未带商品编号时如实显示「—」（不编）",
+    noGoods.indexOf("商品：<span") !== -1 && noGoods.indexOf("data-goods-link") === -1,
+    noGoods.slice(0, 200));
+  check("跨模块跳转函数已暴露", typeof sandbox.openGoods === "function");
 
   /* ---------- ③ 集成（需后端） ---------- */
 

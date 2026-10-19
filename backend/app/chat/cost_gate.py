@@ -1,16 +1,13 @@
-"""成本闸门 —— P1 **第一个**实现的东西。
+"""成本闸门 —— **配置项**（不是设计前提）：按配置给出"何时该停"的兜底判定。
 
-为什么最先做：对话是**高频**模型调用，量级与判定链路的低频调用完全不同。
-只在记账侧统计会出现"已经花了才发现"，因此本模块提供**调用前预检 + 调用后记账**。
+判定优先级（阈值全部来自 `.env`）：
+1. **额度到期 / 耗尽** —— 免费额度失效或已用满，后续调用按量付费，直接暂停；
+2. **预警线**（`COST_WARNING_CNY`）—— 达线即暂停新会话并汇报；
+3. **月度硬上限**（`COST_MONTHLY_CAP_CNY`）—— 达线即停用对话入口。
 
-三级动作（阈值全部来自 `.env`，纪律 9）：
-1. **免费额度优先** —— 额度内优先消耗，余额按**本地累计估算**；
-2. **预警线**（默认 ¥0.1 等效消耗）—— 达到即**暂停新会话**并向用户汇报（防额度耗尽后自动扣费）；
-3. **月度硬上限**（默认 ¥200）—— 达到即停用对话入口。
-
-两处容易写错、且会**静默失效**的地方（本模块专门处理）：
-- **单价缺失 ≠ 闸门失效**：单价为 0 时金额恒为 0，金额闸门永不触发。
-  → 自动降级为**按 token 计量**兜底（累计 token ≥ 免费额度即暂停），并在状态里标 `price_configured=false`。
+两条边界（都容易被写成"静默失效"）：
+- **金额口径只在单价已配置时参与判定**。单价属使用者**可选**提供的外部事实：未配置时
+  一律按 **token 计量**，不去用"金额恒为 0"假装闸门在工作；这是正常状态，**不是配置缺陷**。
 - **DB 抖动 ≠ 不计量**：记账失败时写入**进程内内存兜底**，预检时与 DB 累计相加，避免"库一抖就失控"。
 """
 
@@ -52,7 +49,7 @@ class GateStatus:
     month_calls: int             # 本月模型调用次数
     total_tokens: int            # 本项目累计 token
     free_quota_tokens: int       # 免费额度
-    price_configured: bool       # 是否已配置单价（false 时金额不可信，仅 token 兜底有效）
+    price_configured: bool       # 是否已配置单价（未配置时金额口径不参与判定，按 token 计量）
     degraded: bool = False       # 是否因 DB 不可达而降级（用量可能被低估）
     quota_used: int = 0          # 已用额度 = 外部基线 + 本项目累计
     quota_remaining: int = 0     # 剩余额度（可为负，负数即已透支）
@@ -247,9 +244,6 @@ async def evaluate() -> GateStatus:
     quota_remaining = settings.free_quota_tokens - quota_used
 
     paused, reason, message = _decide(month["amount"], quota_used, days_to_expire)
-
-    if paused and not settings.price_configured:
-        message += "（提示：未配置模型单价，金额口径不可用，当前按 token 兜底判定。）"
 
     return GateStatus(
         paused=paused,

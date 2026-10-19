@@ -20,6 +20,18 @@ from __future__ import annotations
 
 from app.config import settings
 
+#: 官方标注为「多模态模型」、但名字里**不含 `vl`** 的型号。
+#:
+#: 为什么单独列出来：langchain 的 `ChatTongyi` 仅凭 `"vl" in model_name` 推断调用端点，
+#: 这些模型名不含 vl，会被误判到纯文本端点 `text-generation`，服务端随即返回
+#: `400 InvalidParameter: url error`（模型类别与端点不匹配）。这类配置**必然失败**，
+#: 且失败信息（url error）与真实原因（模型类别）相隔很远，极难排查，故在启动期点名。
+#:
+#: 依据：https://help.aliyun.com/zh/model-studio/error-code#error-url
+#: 注意：名单**非穷尽**（官方会持续新增多模态模型），只覆盖已知会踩坑的型号；
+#:      本检查只告警、不阻断启动。
+_MULTIMODAL_MODELS_WITHOUT_VL_HINT = ("qwen3.7-plus", "qwen3.8-max", "qwen3.8-flash")
+
 
 def validate_settings() -> list[str]:
     """返回配置告警列表（无告警则返回空列表）。"""
@@ -64,16 +76,61 @@ def validate_settings() -> list[str]:
     if settings.llm_enabled and not settings.dashscope_api_key:
         warnings.append("LLM_ENABLED=true 但未配置 DASHSCOPE_API_KEY：模型调用会失败")
 
+    # ---- 文本模型与调用端点是否匹配（会稳定 400 的配置，必须提前暴露）----
+    text_model = (settings.llm_text_model or "").strip()
+    if text_model in _MULTIMODAL_MODELS_WITHOUT_VL_HINT:
+        warnings.append(
+            f"LLM_TEXT_MODEL={text_model} 是多模态模型，需 multimodal-generation 端点；"
+            "而 langchain 的 ChatTongyi 只按名字推断端点（不含 vl 即按纯文本处理），"
+            "会稳定返回 400 InvalidParameter: url error。"
+            "请改用纯文本模型（如 qwen3.7-max / qwen-plus）；"
+            "官方说明见 https://help.aliyun.com/zh/model-studio/error-code#error-url"
+        )
+
+    # ---- 可插拔适配层：模式与配置是否自洽 ----
+    declared_source = (settings.data_source or "").strip().lower()
+    if declared_source == "remote":
+        missing = [
+            name
+            for name, val in (
+                ("ORDER_API_BASE", settings.order_api_base),
+                ("LOGISTICS_API_BASE", settings.logistics_api_base),
+                ("AFTERSALE_API_BASE", settings.aftersale_api_base),
+            )
+            if not val
+        ]
+        if missing:
+            warnings.append(
+                "DATA_SOURCE=remote 但 " + " / ".join(missing) + " 为空："
+                "对应取数会一律失败（**不会回落到本地夹具**），表现为「所有单都数据不足转人工」"
+            )
+    elif declared_source not in ("", "local"):
+        warnings.append(
+            f"DATA_SOURCE={settings.data_source!r} 取值非法：只接受 'local' / 'remote'，"
+            "留空表示自动推断"
+        )
+
+    storage_backend = (settings.storage_backend or "local").strip().lower()
+    if storage_backend == "cos" and not settings.storage_configured:
+        warnings.append(
+            "STORAGE_BACKEND=cos 但 COS 配置不完整：需 COS_SECRET_ID / COS_SECRET_KEY / COS_BUCKET，"
+            "否则访问存储时会直接报错（**不会静默回落到本地**）"
+        )
+    elif storage_backend not in ("local", "cos"):
+        warnings.append(
+            f"STORAGE_BACKEND={settings.storage_backend!r} 取值非法：只接受 'local' / 'cos'"
+        )
+
     # ---- 对话入口（P1）----
     if settings.chat_enabled and not settings.llm_enabled:
         warnings.append(
             "CHAT_ENABLED=true 但 LLM_ENABLED=false：对话入口依赖模型，启动后将无法回复"
         )
-    if settings.chat_enabled and not settings.price_configured:
-        warnings.append(
-            "CHAT_ENABLED=true 但未配置模型单价（PRICE_INPUT_PER_1K / PRICE_OUTPUT_PER_1K）："
-            "成本闸门的**金额口径不可用**，将降级为按 token 兜底判定"
-        )
+    # ---- 成本闸门自身参数是否自相矛盾（只校验"使用者给出的值"，不校验"是否填了单价"）----
+    #
+    # ⚠️ **故意不校验「是否配置模型单价」**：单价属使用者**可选**提供的外部事实，
+    # 未配置时成本闸门按 token 计量即可运行，这是**正常状态**。把它做成启动告警，
+    # 等于把"成本"重新当成项目缺陷——而成本是配置项，不是设计前提。
     if settings.cost_monthly_cap_cny > 0 and settings.cost_warning_cny >= settings.cost_monthly_cap_cny:
         warnings.append(
             f"COST_WARNING_CNY({settings.cost_warning_cny}) >= "
