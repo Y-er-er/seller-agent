@@ -5,25 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>售后助手</title>
   <!--
-    买家侧对话页（H5，P1.3）—— 免构建：双击本文件即可打开（file:// 协议）。
-    后端已开 CORS（见 backend/app/main.py），无需本地静态服务器。
-    入口参数：?order_id=xxx（也可在页面上手动填写）。
+    买家侧对话页（H5）—— Vue 3 + Vite 入口。
+
+    开发：cd frontend && npm run dev  → http://127.0.0.1:5173/h5.html
+    构建：cd frontend && npm run build → dist/h5.html
+    访问：http://127.0.0.1:8000/ui/dist/h5.html?order_id=DEMO001
+
+    入口参数：?order_id=xxx（也可在页面上手动填写）；?api=http://127.0.0.1:8001 覆盖后端地址。
 
     **演示模式开关**：开启后任意订单号都按「订单存在」受理——后端按订单号确定性合成
-    订单/物流/画像事实（界面显著标注"合成数据"），用于把售后智能体测透。
-    对应服务端配置 DEMO_ANY_ORDER；未开启时建单返回 403 并给出明确原因。
-
-    ⚠️ 需后端 CHAT_ENABLED=true 才可用；关闭时所有 /api/h5/* 返回 503，
-       页面会明确提示"对话入口未启用"，而不是静默无响应。
+    订单/物流/画像事实（界面显著标注"合成数据"）。
   -->
-  <link rel="stylesheet" href="h5.css?v=20261020a" />
 </head>
 <body>
   <a href="consultation.html" class="consult-link">咨询商家（本地演示）</a>
-  <div id="h5">
-    <!-- 结构由 h5.js 渲染；此处的骨架仅在脚本未加载时可见 -->
-    <noscript>本页需要启用 JavaScript。</noscript>
-  </div>
-  <script src="h5.js?v=20261020a"></script>
+  <div id="h5"></div>
+  <noscript>本页需要启用 JavaScript。</noscript>
+  <script type="module" src="./src/h5/main.js"></script>
 </body>
 </html>

@@ -1006,10 +1006,12 @@ async def dev_seed(payload: SeedPayload) -> dict[str, Any]:
 # ============================================================
 # 根路径引导 + 前端静态托管
 # ============================================================
-# 说明：本服务只提供 API，界面是 frontend/ 下的**免构建静态页**。
+# 说明：本服务提供 API；界面是 frontend/ 下的静态页与 Vue 构建产物（h5 / console）。
 # 为免用户访问根路径撞 404、或纠结 file:// 打开，这里：
 #   1) 根路径 `/` 给出引导页（列出各页面入口）；
-#   2) 把 frontend/ 挂到 `/ui`，使 `http://127.0.0.1:8000/ui/console.html` 可直接访问（同源、无 CORS 问题）。
+#   2) 把 frontend/ 挂到 `/ui`，使 `http://127.0.0.1:8000/ui/dist/console.html` 可直接访问
+#      （同源、无 CORS 问题）。
+#   构建 h5 / console：cd frontend && npm install && npm run build（产物 frontend/dist/）。
 
 _FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 
@@ -1026,15 +1028,15 @@ _ROOT_HTML = """<!DOCTYPE html>
 <body>
  <h1>商铺经营Agent · 后端已启动</h1>
  <div class="ok">✓ 服务运行中（本页由后端提供）</div>
- <p>本服务只提供 <b>API</b>；界面是免构建静态页，直接从下面进入：</p>
+ <p>本服务提供 <b>API</b>；界面入口如下（h5 / console 为 Vue 构建产物）：</p>
  <ul>
   <li><b>商铺经营Agent</b>（主界面）：<a href="/ui/seller.html">/ui/seller.html</a></li>
-  <li><b>售后指挥台</b>（控制台的「售后」页内嵌的就是它）：<a href="/ui/console.html">/ui/console.html</a></li>
-  <li><b>买家 H5</b>：<a href="/ui/h5.html?order_id=DEMO001">/ui/h5.html?order_id=DEMO001</a></li>
+  <li><b>售后指挥台</b>（控制台的「售后」页内嵌的就是它）：<a href="/ui/dist/console.html">/ui/dist/console.html</a></li>
+  <li><b>买家 H5</b>：<a href="/ui/dist/h5.html?order_id=DEMO001">/ui/dist/h5.html?order_id=DEMO001</a></li>
   <li><b>买家咨询（本地演示）</b>：<a href="/ui/consultation.html">/ui/consultation.html</a></li>
   <li><b>API 文档</b>：<a href="/docs">/docs</a>　|　<b>健康检查</b>：<a href="/api/health">/api/health</a></li>
  </ul>
- <p class="muted">也可直接双击 <code>frontend/seller.html</code>（file:// 打开，效果相同）。</p>
+ <p class="muted">seller.html 可直接双击打开；h5 / console 需先 <code>cd frontend &amp;&amp; npm run build</code>，再经 <code>/ui/dist/</code> 访问。</p>
 </body></html>"""
 
 

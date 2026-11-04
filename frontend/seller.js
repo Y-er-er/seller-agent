@@ -15,7 +15,7 @@ var DEFAULT_API_BASE = "http://127.0.0.1:8000";
 /** 前端版本号（免构建静态页没有文件哈希，浏览器可能一直用旧缓存 —— 顶栏直接显示，
  *  让"我改了但页面没生效"一眼可见。**每次改完 seller.js 必须同步更新这里**
  *  以及 seller.html 里 script 标签的 `?v=`（两者保持一致）。 */
-var FRONTEND_VERSION = "1021orders5";
+var FRONTEND_VERSION = "1104vue1";
 
 /* ---------- 登录态 ----------
  * Token 存 `localStorage`，随每个请求走 `X-Seller-Token` 头。
@@ -1061,10 +1061,11 @@ function hdAftersale() {
 }
 
 function bodyAftersale() {
-  // v 参数随 FRONTEND_VERSION 走：内嵌页（console.html 及其引用的 css/js）改版后，
+  // v 参数随 FRONTEND_VERSION 走：内嵌页（dist/console.html 及其引用的 css/js）改版后，
   // URL 变化可强制浏览器弃用旧缓存 —— 否则会出现"改了样式页面不变"的缓存坑。
+  // 售后指挥台已迁移到 Vue 3 + Vite，构建产物位于 frontend/dist/（后端经 /ui/dist/ 托管）。
   return '<div style="height:100%">'
-    + '<iframe class="embed-frame" src="console.html?embed=1&v=' + FRONTEND_VERSION + '" title="售后指挥台"></iframe></div>';
+    + '<iframe class="embed-frame" src="dist/console.html?embed=1&v=' + FRONTEND_VERSION + '" title="售后指挥台"></iframe></div>';
 }
 
 /* ---------- 渲染：右栏（上下文面板） ---------- */

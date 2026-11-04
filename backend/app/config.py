@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# 项目根目录（backend/app/config.py -> backend/app -> backend -> refund-agent）
+# 项目根目录（backend/app/config.py -> backend/app -> backend -> Shop-Agent）
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 

@@ -4,30 +4,19 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>售后指挥台</title>
-<link rel="stylesheet" href="console.css?v=1021c" />
-<script>
-  // ?embed=1：被「商铺经营Agent」以 iframe 内嵌时，隐藏自己的顶栏。
-  // 不隐藏的话会出现两条顶栏（外层控制台一条 + 内嵌页一条），视觉上很乱。
-  // 其余功能完全不变 —— 这是"售后模块本轮按当前实现原样嵌入"的落点。
-  if (new URLSearchParams(location.search).get("embed") === "1") {
-    document.documentElement.classList.add("embed");
-  }
-</script>
+<!--
+  售后指挥台 —— Vue 3 + Vite 入口。
+
+  开发：cd frontend && npm run dev  → http://127.0.0.1:5173/console.html
+  构建：cd frontend && npm run build → dist/console.html
+  访问：http://127.0.0.1:8000/ui/dist/console.html
+
+  ?embed=1：被卖家控制台以 iframe 内嵌时隐藏自身顶栏（入口脚本处理）。
+  ?api=http://127.0.0.1:8001 可覆盖后端地址。
+-->
 </head>
 <body>
-<div class="topbar">
-  <div class="brand">售后指挥台</div>
-  <div class="conn" id="conn"><span class="dot"></span><span id="connText">连接中…</span></div>
-  <div class="live" id="live"><i></i><span id="liveText">实时刷新中</span></div>
-  <button id="btnLive">暂停实时</button>
-  <button id="btnRefresh">刷新</button>
-</div>
-<div class="stage">
-  <aside class="side" id="side"></aside>
-  <section class="list" id="listPane"></section>
-  <section class="detail" id="detailPane"></section>
-</div>
-<!-- ?v= 与 console.css 同步：改了脚本/样式就 bump，防浏览器拿旧缓存 -->
-<script src="console.js?v=1021c"></script>
+<div id="app"></div>
+<script type="module" src="./src/console/main.js"></script>
 </body>
 </html>

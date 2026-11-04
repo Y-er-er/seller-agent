@@ -1,4 +1,4 @@
-# 商铺经营Agent
+# Shop-Agent（商铺经营Agent）
 
 > 面向**卖家**的经营控制台：**商品陈列 / 商品管理 / 售后**三个业务模块并列，
 > 卖家既可**手动完成全部操作**，也可**只对 AI 助手说一句话**让它调用工具代做；
@@ -33,7 +33,8 @@
 
 ## 项目简介
 
-**商铺经营Agent**（仓库目录 `refund-agent`）是一个单体应用：FastAPI 后端 + 免构建静态前端。
+**Shop-Agent**（中文名「商铺经营Agent」，仓库目录 `Shop-Agent/`）是一个单体应用：FastAPI 后端 +
+Vue 3（h5 / console，经 Vite 构建）与原生静态页（seller）混合前端。
 它把卖家日常经营中最高频的三件事放进同一个控制台：
 
 | 模块 | 做什么 | 数据视角 |
@@ -75,10 +76,10 @@
 
 ```mermaid
 graph TB
-    subgraph FE["前端 · 免构建静态页（frontend/）"]
-        H5["h5.html 买家侧"]
-        CON["console.html 售后指挥台"]
-        SELLER["seller.html 卖家控制台"]
+    subgraph FE["前端 · Vue 3 + Vite / 静态页（frontend/）"]
+        H5["src/h5 · 买家侧（Vue）"]
+        CON["src/console · 售后指挥台（Vue）"]
+        SELLER["seller.html · 卖家控制台"]
         DRAW["AI 助手浮窗"]
     end
 
@@ -184,7 +185,8 @@ sequenceDiagram
 | 向量库 | ChromaDB ≥ 0.6（实测 1.5.9） | 本地持久化，无需额外服务 |
 | 数据库 | MySQL 8.x + PyMySQL | 同步驱动 + 线程池桥接 |
 | 配置 | pydantic-settings + `.env` | 系统环境变量优先于 `.env` |
-| 前端 | 原生 HTML / CSS / JavaScript | **免构建**，双击即可打开 |
+| 前端 | Vue 3 + Vite（h5 / console）· 原生 HTML/CSS/JS（seller） | h5 与 console 为 SFC 多页应用；seller 仍免构建 |
+| 前端构建 | Vite 6 + `@vitejs/plugin-vue` | `npm run build` 输出 `frontend/dist/` |
 
 > **文本模型必须选纯文本型号**。LangChain 的 `ChatTongyi` 只按模型名是否含 `vl` 推断端点，
 > 名字不含 `vl` 的多模态模型（如 `qwen3.7-plus` / `qwen3.8-max`）会被误判到纯文本端点，
@@ -195,7 +197,7 @@ sequenceDiagram
 ## 目录结构
 
 ```text
-refund-agent/
+Shop-Agent/
 ├── backend/
 │   ├── run.py                     # 启动入口（uvicorn，127.0.0.1:8000）
 │   ├── requirements.txt           # 依赖清单（版本经兼容性验证）
@@ -223,10 +225,18 @@ refund-agent/
 │   ├── scripts/
 │   │   └── create_seller_account.py
 │   └── tests/                     # 36 个离线测试
-├── frontend/                      # 免构建静态页（后端挂载到 /ui）
-│   ├── seller.html / .css / .js   # 卖家控制台 + AI 浮窗
-│   ├── console.html / .css / .js  # 售后指挥台
-│   ├── h5.html / .css / .js       # 买家侧
+├── frontend/                      # 前端（后端挂载到 /ui）
+│   ├── seller.html / .css / .js   # 卖家控制台 + AI 浮窗（免构建，保持原生）
+│   ├── h5.html                    # 买家侧入口（Vite 入口）
+│   ├── console.html               # 售后指挥台入口（Vite 入口）
+│   ├── package.json / vite.config.js
+│   ├── src/
+│   │   ├── shared/                # 统一 API 出口、SSE 解析
+│   │   ├── h5/                    # 买家侧 Vue 应用（App.vue）
+│   │   └── console/               # 售后指挥台 Vue 应用（App.vue）
+│   ├── legacy/                    # Vue 迁移前的原生实现（回归基线）
+│   ├── dist/                      # 构建产物（不入库）
+│   ├── h5.css / console.css       # 由 Vue 组件直接复用
 │   └── verify_*.cjs               # 前端离线验证脚本
 ├── config/
 │   ├── refund_rules.yaml          # 退款规则 R1–R11
@@ -253,9 +263,9 @@ refund-agent/
 | 项 | 要求 |
 | --- | --- |
 | Python | 3.11.x（本项目实测 3.11.15） |
-| MySQL | 8.x，需先启动并可连接；库名示例 `refund_agent` |
+| MySQL | 8.x，需先启动并可连接；库名 `Shop-Agent`（含连字符，SQL 中须用反引号） |
 | 端口 | `8000` 未被占用 |
-| Node.js | 仅前端验证脚本需要（可选） |
+| Node.js | 18+（实测 22.22） | **构建 h5 / console（Vue 3 + Vite）必需**；前端验证脚本也需要 |
 
 > 对话层与商品域依赖 MySQL。**数据库不可达时建单会返回 500**，这是预期失败，不会静默降级。
 
@@ -327,21 +337,35 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 >
 > 后端 `reload=False`，**改代码后必须重启进程**。
 
-### 6. 打开前端
+### 6. 构建前端（Vue 页面）
 
-前端免构建，可双击用 `file://` 打开（CORS 默认放行），也可同源访问：
+h5 与 console 已迁移为 Vue 3 + Vite 多页应用，需先安装依赖并构建：
 
-| 页面 | 本地文件 | 同源地址 | 用途 |
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+产物输出到 `frontend/dist/`，由后端 `/ui/dist/` 直接托管。
+
+- 开发调试：`npm run dev`（默认 5173，`/api` 代理到 8000），改完仍需 `npm run build` 供后端访问。
+- **h5 / console 的构建产物是 ES Module，不能再通过 `file://` 双击打开**；请经后端 `/ui` 或静态服务器访问。
+- `seller.html` 仍是免构建静态页，但其内嵌的售后指挥台指向 `dist/console.html`，因此**仍需先构建**。
+
+### 7. 打开前端
+
+| 页面 | 源文件 | 访问地址 | 用途 |
 | --- | --- | --- | --- |
 | 卖家控制台 | `frontend/seller.html` | `http://127.0.0.1:8000/ui/seller.html` | 商品 / 陈列 / 售后 / 知识库 + AI 助手 |
-| 售后指挥台 | `frontend/console.html` | `http://127.0.0.1:8000/ui/console.html` | 收件箱、接管、退回、结案 |
-| 买家 H5 | `frontend/h5.html?order_id=DEMO001` | `http://127.0.0.1:8000/ui/h5.html?order_id=DEMO001` | 扮演买家发起售后 |
+| 售后指挥台 | `frontend/console.html` | `http://127.0.0.1:8000/ui/dist/console.html` | 收件箱、接管、退回、结案 |
+| 买家 H5 | `frontend/h5.html` | `http://127.0.0.1:8000/ui/dist/h5.html?order_id=DEMO001` | 扮演买家发起售后 |
 | 引导页 | — | `http://127.0.0.1:8000/` | 列出所有入口 |
 | API 文档 | — | `http://127.0.0.1:8000/docs` | Swagger UI（86 个操作） |
 
 若后端不在 8000 端口，前端支持 `?api=http://127.0.0.1:8001` 覆盖。
 
-### 7. 登录卖家控制台
+### 8. 登录卖家控制台
 
 首次启动且账号表为空时，后端按 `.env` 中以下配置创建初始账号：
 
@@ -525,14 +549,21 @@ python -m pytest tests -q
 共 36 个测试文件，覆盖规则引擎、判定图、助手循环、工具注册、知识库、登录鉴权、
 订单导入、客服消息、成本闸门等。多数使用假仓储 / 假模型，无需外部服务。
 
-### 前端（最小 DOM mock）
+### 前端（构建检查 + 离线回归）
 
 ```bash
+# 构建检查：SFC 编译与多页产物
+cd frontend && npm run build
+
+# 离线回归（h5 / console 迁移后，脚本指向 frontend/legacy/ 的原生实现）
 node frontend/verify_seller.cjs
 node frontend/verify_console.cjs
 node frontend/verify_h5.cjs
 node frontend/verify_commerce.cjs
 ```
+
+> `verify_h5.cjs` / `verify_console.cjs` 当前验证的是 `legacy/` 中的原生实现（行为基线）；
+> Vue 组件的交互验证依赖构建 + 手工链路，组件级单测待补。
 
 **硬规则**：
 

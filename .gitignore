@@ -1,8 +1,28 @@
 # ============================================================
-# 商铺经营Agent · Git 忽略规则
+# Shop-Agent（商铺经营Agent）· Git 忽略规则
+#
 # 原则：只提交「源代码 / 配置模板 / 建表与迁移脚本 / 文档 / 示例素材」；
-#       密钥、运行期数据、依赖与构建产物、IDE/系统文件一律不入库。
+#       密钥、运行期数据、依赖与构建产物、IDE 与系统文件一律不入库。
+#
+# 约定：
+# - 以 `/` 开头的规则只匹配仓库根，避免误伤同名的源码目录
+#   （例如前端的 `src/data/`、`src/env/` 不会被当成运行期目录忽略）；
+# - `!` 开头的取反规则必须放在对应忽略规则**之后**才生效。
 # ============================================================
+
+# ---------- 密钥与环境变量（真实凭据绝不入库）----------
+.env
+.env.*
+!.env.example
+!.env.sample
+backend/.env
+backend/.env.*
+!backend/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
 
 # ---------- Python ----------
 __pycache__/
@@ -10,42 +30,42 @@ __pycache__/
 *$py.class
 *.egg-info/
 .eggs/
-build/
-dist/
-wheels/
+/build/
+/dist/
+/wheels/
 *.so
 *.pyd
 
 # ---------- 虚拟环境 ----------
 .venv/
-venv/
-env/
+/venv/
+/env/
 ENV/
 .python-version
+pyvenv.cfg
 
-# ---------- 环境变量与密钥（真实凭据绝不入库）----------
-.env
-.env.*
-!.env.example
-backend/.env
-*.pem
-*.key
-*.p12
-*.pfx
-
-# ---------- 运行期数据 ----------
-# 覆盖仓库根 data/ 与 backend/data/（上传图片、Chroma 向量库、SQLite 检查点）
-data/
-backend/data/
+# ---------- 运行期数据（上传件 / Chroma 向量库 / SQLite 检查点 / 备份）----------
+/data/
+/backend/data/
 *.sqlite
 *.sqlite3
 *.db
-# Chroma 持久化文件（位于 data/knowledge/，已被 data/ 覆盖，此处显式声明意图）
+# SQLite / WAL 模式的伴生文件（进程退出后常残留）
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.db-wal
+*.db-shm
+# Chroma 持久化文件（位于 data/knowledge/，已被 /data/ 覆盖，此处显式声明意图）
 chroma.sqlite3
 
 # ---------- 日志与临时产物 ----------
 *.log
-logs/
+*.log.*
+/logs/
+/tmp/
+/temp/
 *.tmp
 *.temp
 *.bak
@@ -54,23 +74,44 @@ logs/
 *.swp
 *.swo
 *~
+*.pid
+*.sock
+nohup.out
+
+# ---------- 备份 / 归档文件（数据库转储、压缩包）----------
+# 注意：不忽略 *.sql —— sql/ 下是建表与迁移脚本，必须入库
+*.dump
+*.sql.gz
+*.sql.zip
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
 
 # ---------- 测试与覆盖率 ----------
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
 .coverage
 .coverage.*
 coverage.xml
+/coverage/
 htmlcov/
 pytest_report.html
 .tox/
 .nox/
+.ipynb_checkpoints/
 
-# ---------- 前端 ----------
+# ---------- 前端（Vue 3 + Vite）----------
 node_modules/
+/frontend/dist/
+/frontend/.vite/
 .vite/
 *.tsbuildinfo
+/package-lock.json.tmp
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -79,6 +120,8 @@ pnpm-debug.log*
 # ---------- IDE / 编辑器 ----------
 .idea/
 .vscode/
+.fleet/
+.history/
 *.iml
 *.ipr
 *.iws
@@ -89,9 +132,15 @@ pnpm-debug.log*
 .DS_Store
 .DS_Store?
 ._*
+.Spotlight-V100
+.Trashes
 Thumbs.db
 ehthumbs.db
 desktop.ini
+$RECYCLE.BIN/
+
+# ---------- 工具本地状态 ----------
+.workbuddy/
 
 # ---------- 历史归档 ----------
 # 旧复核工作台 / 设计原型 / 历史文档，不属于当前源码，默认不入库。

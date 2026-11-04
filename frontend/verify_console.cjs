@@ -16,7 +16,8 @@ const path = require("path");
 const vm = require("vm");
 
 const FRONTEND_DIR = __dirname;
-const CONSOLE_JS = path.join(FRONTEND_DIR, "console.js");
+// Vue 迁移后，原免构建实现保留在 legacy/ 作为回归基线；新实现见 src/console/。
+const CONSOLE_JS = path.join(FRONTEND_DIR, "legacy", "console.js");
 const API_BASE = process.env.VERIFY_API_BASE || "http://127.0.0.1:8000";
 
 const failures = [];

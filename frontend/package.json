@@ -1,0 +1,19 @@
+{
+  "name": "shop-agent-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "商铺经营Agent 前端（Vue 3 + Vite）：h5 买家侧与 console 售后指挥台",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.0.7"
+  }
+}
