@@ -167,8 +167,9 @@ class FakeChatRepo:
         self.usages.append({"case_id": case_id, "amount": amount, "created_at": datetime.now()})
         return True
 
-    async def sum_usage(self, since=None):
+    async def sum_usage(self, since=None, model=None):
         rows = [u for u in self.usages if since is None or u["created_at"] >= since]
+        # `model` 是额度判定用的按模型过滤（成本闸门会传）；本组用例只看金额，返回 0 token
         return {"amount": sum(u["amount"] for u in rows), "tokens": 0, "calls": len(rows)}
 
 

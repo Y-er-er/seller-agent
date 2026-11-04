@@ -1,0 +1,2 @@
+order_id,line_id,goods_no,sku_id,title,quantity,unit_price_cent,paid_cent,status,placed_at
+EXAMPLE-001,1,G-0001,,示例商品,1,9900,9900,paid,2026-10-21 10:00:00

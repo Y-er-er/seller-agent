@@ -51,6 +51,8 @@ def _loads(raw: Any) -> Any:
 def _normalize(row: dict[str, Any]) -> dict[str, Any]:
     item = dict(row)
     item["detail"] = _loads(item.get("detail"))
+    # payload 用于**重试**：持久化"重建执行体所需的参数"（handler 是函数引用，存不下来）
+    item["payload"] = _loads(item.get("payload"))
     for key in ("created_at", "started_at", "finished_at"):
         value = item.get(key)
         if isinstance(value, datetime):
@@ -65,13 +67,13 @@ def _normalize(row: dict[str, Any]) -> dict[str, Any]:
 
 def _create_task(
     seller_id: str, kind: str, title: str, target: str,
-    action_id: int | None, status: str,
+    action_id: int | None, status: str, payload_json: str | None = None,
 ) -> int:
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO ops_task (seller_id, kind, title, target, action_id, status)"
-            " VALUES (%s,%s,%s,%s,%s,%s)",
-            (seller_id, kind, title, target or None, action_id, status),
+            "INSERT INTO ops_task (seller_id, kind, title, target, action_id, status, payload)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (seller_id, kind, title, target or None, action_id, status, payload_json),
         )
         return int(cur.lastrowid)
 
@@ -79,10 +81,18 @@ def _create_task(
 async def create_task(
     kind: str, title: str, *, target: str = "", action_id: int | None = None,
     status: str = TASK_QUEUED, seller_id: str = DEFAULT_SELLER_ID,
+    payload: dict[str, Any] | None = None,
 ) -> int:
-    """登记一条任务，返回 id。"""
+    """登记一条任务，返回 id。
+
+    `payload` 存**重建执行体所需的参数**（不是 handler 本身）——
+    只有**可安全重试**的 kind 需要写它（当前是 `ai_cover`）。
+    """
     _require_uri()
-    return await run_sync(_create_task, seller_id, kind, title, target, action_id, status)
+    return await run_sync(
+        _create_task, seller_id, kind, title, target, action_id, status,
+        json.dumps(payload, ensure_ascii=False) if payload else None,
+    )
 
 
 def _update_task(task_id: int, fields: dict[str, Any]) -> None:

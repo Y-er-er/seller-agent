@@ -114,6 +114,16 @@ body {
 .order-card .row .k { color: var(--muted); }
 .order-card .row .v { font-weight: 600; }
 
+/* 物流轨迹（演示模式的合成轨迹，逐条带时间与城市） */
+.order-card .trace {
+  margin: 6px 0 0;
+  padding: 6px 0 0 16px;
+  border-top: 1px dashed var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+.order-card .trace li { padding: 2px 0; }
+
 /* ---------- 消息区 ---------- */
 .messages {
   flex: 1;
@@ -424,3 +434,5 @@ body {
 }
 
 .hidden { display: none !important; }
+/* 咨询与售后是两个入口；买家能从售后页切到普通咨询。 */
+.consult-link{display:block;text-align:center;padding:8px;color:#b45309;background:#fff4e6}

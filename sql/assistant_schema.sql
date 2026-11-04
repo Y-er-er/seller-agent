@@ -40,12 +40,14 @@ CREATE TABLE IF NOT EXISTS pending_action (
     arguments  JSON            NOT NULL                 COMMENT '待执行的入参（确认后原样执行）',
     summary    VARCHAR(255)    NOT NULL                 COMMENT '一句话说明（界面主文案）',
     detail     TEXT            NULL                     COMMENT '影响明细（界面展开显示，如"将删除 3 件商品及 5 张图片"）',
-    status     VARCHAR(16)     NOT NULL DEFAULT 'pending' COMMENT '状态：pending / confirmed / cancelled / expired',
+    status     VARCHAR(16)     NOT NULL DEFAULT 'pending' COMMENT '状态：pending / running（已抢占执行中）/ confirmed / failed / cancelled / expired',
+    batch_id   VARCHAR(40)     NULL                     COMMENT '批次：同一次请求里的多个待确认动作共享一个值（界面据此收成一张卡，一次确认执行整批）',
     result     TEXT            NULL                     COMMENT '确认后执行的结果摘要（回写到对话）',
     created_at DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '提出时间',
-    decided_at DATETIME        NULL                     COMMENT '决定时间',
+    decided_at DATETIME        NULL                     COMMENT '决定时间（running 时写入抢占时刻，用于判定执行是否卡死）',
     PRIMARY KEY (id),
     KEY idx_pending (seller_id, status, created_at)     COMMENT '查待确认列表',
+    KEY idx_batch (batch_id)                            COMMENT '按批次取动作（一次确认整批）',
     KEY idx_thread (thread_id)
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4

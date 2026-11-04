@@ -71,12 +71,16 @@ class Settings(BaseSettings):
     # **逐次调用前置预检**，不是事后统计（否则"已经花了才发现"）。
     cost_warning_cny: float = 20.0       # 预警线（元）：默认取月度上限的 10%
     cost_monthly_cap_cny: float = 200.0  # 月度硬上限
-    free_quota_tokens: int = 1_000_000   # 免费额度（token）；耗尽后进入现金计费
+    # **单个模型**的免费额度（token）；耗尽后进入现金计费。
+    # ⚠️ 口径是"每个模型各一份"（百炼的发放方式），所以判定时只比**当前文本模型**的用量。
+    # 拿全模型合计去比会把新模型的额度"让"给旧模型 —— 换模型后对话会被误判为耗尽。
+    free_quota_tokens: int = 1_000_000
     # **额度到期日**（以官方控制台为准，形如 "2026-10-31"）。
     # 官方免费额度有有效期：**到期后额度失效，后续调用转为按量付费**。
     # 因此"到期"必须与"耗尽"一样触发暂停——否则会在不知情的情况下开始真扣费。
     free_quota_expire_date: str = ""
-    # 官方控制台显示的**外部已用量**（非本项目消耗）。本地累计之外再加上它，才能得到真实剩余额度。
+    # 官方控制台显示的**外部已用量**（非本项目消耗），**按当前模型**计。
+    # 本地累计之外再加上它，才能得到该模型的真实剩余额度。
     free_quota_used_baseline: int = 0
     # 单价（元 / 1K token）—— **可选项**，属使用者提供的外部事实，本项目不臆造价格。
     # 留空（=0）时成本闸门只按 token 计量：**这是正常状态，不是待补的配置缺陷**，不做启动告警。
@@ -96,11 +100,29 @@ class Settings(BaseSettings):
     reship_amount_cap: float = 200.0 # R9/R10：补发自动处理上限（元）——达到即转人工
     refund_window_days: int = 15     # R11：售后时效（天），签收后超过此天数且非质量 → 拒绝
 
+    # ---------- 知识库（卖家自建资料的检索 · RAG）----------
+    # 卖家自己上传规则/政策/商品资料，助手按需检索引用 —— 数据自产，不依赖外部平台。
+    # ⚠️ 向量化**按 token 计费**（与对话模型同属正常模型调用，成本是配置项）。
+    knowledge_enabled: bool = True
+    # Chroma 持久化目录（相对 backend/）；删库=删这个目录，别手工删单个文件
+    knowledge_dir: str = "./data/knowledge"
+    knowledge_collection: str = "seller_knowledge"
+    # 向量化模型与维度：text-embedding-v3 支持 1024 / 768 / 512，改维度须重建库
+    embedding_model: str = "text-embedding-v3"
+    embedding_dimensions: int = 1024
+    # DashScope 的 OpenAI 兼容端点（向量化与兼容调用共用）
+    dashscope_compat_base: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    embedding_batch: int = 10        # v3 单次最多 10 条，超了服务端会拒
+    embedding_timeout: float = 15.0
+    # 分块参数：700 字 / 100 字重叠（按句子边界切，重叠保住跨块上下文）
+    knowledge_chunk_size: int = 700
+    knowledge_chunk_overlap: int = 100
+    knowledge_top_k: int = 5         # 默认检索条数
+    knowledge_max_upload_bytes: int = 10 * 1024 * 1024   # 单份资料上限 10 MB
+
     # ---------- 数据库 ----------
     mysql_uri: str = ""
-    checkpoint_sqlite_path: str = "./data/checkpoints.sqlite"
-
-    # 审计是否落 MySQL。关闭时 audit 节点只产出内存事件，不触碰数据库
+    checkpoint_sqlite_path: str = "./data/checkpoints.sqlite"    # 审计是否落 MySQL。关闭时 audit 节点只产出内存事件，不触碰数据库
     # （单元测试与离线环境据此保持无外部依赖）。
     audit_db_enabled: bool = True
 
@@ -137,6 +159,9 @@ class Settings(BaseSettings):
     cos_region: str = "ap-nanjing"
     cos_bucket: str = ""
 
+    #: 回收站保留天数：删除的商品在此期限内可恢复，到期自动彻底删除（0 = 不自动清）
+    goods_trash_days: int = 7
+
     # ---------- 图像生成（AI 宣传图 · 通义万相）----------
     # ⚠️ 留空 = 未开通 / 未配置 → 生图端点会**明确报错**，绝不假装能生成。
     #    常用型号：wanx2.1-t2i-turbo（快）· wanx2.1-t2i-plus（精细）· wan2.5-t2i-preview
@@ -159,6 +184,20 @@ class Settings(BaseSettings):
     # 两条硬边界：① 合成数据一律标注 `synthetic=true`，**不伪装成真实数据**；
     #            ② 已配置真实业务 API（order_api_base / logistics_api_base）时**整体失效**，不污染真实链路。
     demo_any_order: bool = True
+
+    # ---------- 卖家登录（唯一身份来源）----------
+    # 会话有效期（小时）。到期后必须重新登录；每次登录都会分配**新的助手会话线程**。
+    seller_session_hours: float = 12.0
+    # 连续登录失败达到该次数后锁定一段时间（同一账号 + 同一进程内计数）。
+    seller_login_max_fails: int = 5
+    seller_login_lock_minutes: float = 10.0
+    # 首次启动自动创建的演示账号（仅在账号表为空时创建；**不会覆盖已存在的密码**）。
+    # 改密：重新登录前把 SELLER_BOOTSTRAP_* 与库里的账号对齐，或直接用 scripts/create_seller_account.py 重建。
+    seller_bootstrap_username: str = "admin"
+    seller_bootstrap_password: str = "admin123"
+    seller_bootstrap_name: str = "默认卖家"
+    # 该演示账号绑定的业务数据归属 —— 与历史数据（DDL 默认值）保持一致，登录后直接看到现有店铺数据。
+    seller_bootstrap_seller_id: str = "default"
 
     # ---------- 跨域（复核工作台）----------
     # 免构建的静态工作台通过 file:// 或本地静态端口打开，与后端**不同源**，

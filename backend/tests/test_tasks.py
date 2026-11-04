@@ -43,12 +43,13 @@ class FakeRepo:
         self.progress_log: list[tuple[int, str]] = []
 
     async def create_task(self, kind, title, *, target="", action_id=None,
-                          status=TASK_QUEUED, seller_id="default"):
+                          status=TASK_QUEUED, seller_id="default", payload=None):
         self._id += 1
         self.tasks[self._id] = {
             "id": self._id, "kind": kind, "title": title, "target": target,
             "action_id": action_id, "status": status, "progress": 0,
             "stage": None, "result": None, "detail": None, "error": None,
+            "payload": payload,
             "seller_id": seller_id,
         }
         return self._id

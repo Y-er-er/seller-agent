@@ -98,25 +98,38 @@ async def health_ranking(seller_id: str, *, limit: int = 3, min_cases: int = 1) 
 
     `min_cases` 用于过滤样本太小的商品 —— 1 单里退了 1 单就是 100%，
     直接上榜会误导；这是**统计口径**，不是"美化数据"（前端会标注样本量）。
+
+    ⚠️ **必须一次查完**：早期实现是 `for goods in goods_list: await list_cases_by_goods(...)`，
+    即 N+1 —— 且连接层每次查询新建一条 MySQL 连接（远程库握手实测约 45ms），
+    22 件商品就要 ~1 秒，商品越多线性恶化。榜单只要「总数 + 赔付数」两个聚合值，
+    一条 `GROUP BY` 足够，口径与 `_summarize()` 一致。
     """
     goods_list = await goods_repo.list_goods(seller_id, scope="all", limit=200)
-    ranking: list[dict[str, Any]] = []
+    titles: dict[str, str] = {}
     for goods in goods_list:
         goods_no = str(goods.get("goods_no") or "")
-        if not goods_no:
+        if goods_no:
+            titles[goods_no] = goods.get("title")
+    if not titles:
+        return []
+
+    # 一条 SQL 取回全部商品的计数（无工单的商品不会出现在返回里）
+    agg = await chat_repo.aggregate_cases_by_goods(list(titles))
+
+    ranking: list[dict[str, Any]] = []
+    for goods_no, title in titles.items():
+        row = agg.get(goods_no) or {}
+        total = int(row.get("total") or 0)
+        if total < min_cases:
             continue
-        cases = await chat_repo.list_cases_by_goods(goods_no, limit=200)
-        if len(cases) < min_cases:
-            continue
-        summary = _summarize(cases)
-        if not summary["total"]:
-            continue
+        costly = int(row.get("costly") or 0)
         ranking.append({
             "goods_no": goods_no,
-            "title": goods.get("title"),
-            "total": summary["total"],
-            "refund_rate": summary["refund_rate"],
-            "costly_count": summary["costly_count"],
+            "title": title,
+            "total": total,
+            # 退货率 = （退款 + 补发）/ 工单总数；与 `_summarize()` 同口径
+            "refund_rate": round(costly / total * 100, 1),
+            "costly_count": costly,
         })
     ranking.sort(key=lambda item: (item["refund_rate"] or 0, item["total"]), reverse=True)
     return ranking[:limit]

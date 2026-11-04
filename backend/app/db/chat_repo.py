@@ -212,6 +212,42 @@ async def list_cases_by_goods(goods_no: str, limit: int = 200) -> list[dict[str,
     return await run_sync(_list_cases_by_goods, goods_no, limit)
 
 
+def _aggregate_cases_by_goods(goods_nos: list[str]) -> dict[str, dict[str, int]]:
+    """**一次查完**多个商品的工单计数与赔付数（`健康度榜` 专用）。
+
+    ⚠️ 为什么要有这个函数：逐商品调 `list_cases_by_goods` 是 N+1，而连接层
+    每次查询都新建一条 MySQL 连接（远程库单次握手实测约 45ms）。22 件商品
+    就是 22 次握手 ≈ 1 秒 —— 实测概览接口因此要 0.95s，且商品越多线性恶化。
+    健康度榜只要 `total / costly` 两个聚合值，一条 `GROUP BY` 就够。
+
+    口径必须与 `_summarize()` 一致：赔付类只算 `refund` / `reship`
+    （补发也是履约失败）；`decision_result` 为 NULL 的行计入 total 但不计入 costly
+    —— 与"未判定不当作没退货"一致，它落在分母里。
+    """
+    if not goods_nos:
+        return {}
+    # 去重的同时保持对调用方透明（IN 列表长度由调用方商品数决定，上限 200）
+    keys = list(dict.fromkeys(goods_nos))
+    placeholders = ",".join(["%s"] * len(keys))
+    sql = (
+        "SELECT goods_no, COUNT(*) AS total, "
+        "       COALESCE(SUM(decision_result IN ('refund','reship')), 0) AS costly "
+        f"FROM conversation_case WHERE goods_no IN ({placeholders}) GROUP BY goods_no"
+    )
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(sql, tuple(keys))
+        return {
+            str(row[0]): {"total": int(row[1]), "costly": int(row[2])}
+            for row in cur.fetchall()
+        }
+
+
+async def aggregate_cases_by_goods(goods_nos: list[str]) -> dict[str, dict[str, int]]:
+    """批量版的工单聚合（返回 `{goods_no: {total, costly}}`；无工单的商品不出现）。"""
+    _require_uri()
+    return await run_sync(_aggregate_cases_by_goods, goods_nos)
+
+
 def _list_cases_by_workflow(workflow_status: str | None, limit: int) -> list[dict[str, Any]]:
     with connect() as conn, conn.cursor() as cur:
         if workflow_status:
@@ -304,12 +340,28 @@ async def append_message(
     )
 
 
+#: 「最近 N 条」的取法：先按 seq 倒序截断，再正序回来。
+#: 单独提出来是为了能被测试**静态钉住**（回退成 `ASC LIMIT` 时测试会失败）。
+SQL_RECENT_MESSAGES = (
+    "SELECT * FROM ("
+    "  SELECT * FROM conversation_message WHERE case_id=%s ORDER BY seq DESC LIMIT %s"
+    ") t ORDER BY t.seq ASC"
+)
+
+
 def _list_messages(case_id: str, limit: int | None) -> list[dict[str, Any]]:
-    sql = "SELECT * FROM conversation_message WHERE case_id=%s ORDER BY seq ASC"
-    params: list[Any] = [case_id]
+    """按 seq 升序返回；给了 `limit` 时取**最近** limit 条。
+
+    ⚠️ `ORDER BY seq ASC LIMIT n` 取到的是**最早**的 n 条（不是最近的）——
+    售后会话一旦超过 20 条，`build_history` 拿到的就是开头那段，
+    **买家刚发的那条消息进不了模型**，智能体会一直回应早前那一句。
+    所以限流时必须"先倒序截断、再正序"。
+    """
     if limit:
-        sql += " LIMIT %s"
-        params.append(limit)
+        sql, params = SQL_RECENT_MESSAGES, [case_id, limit]
+    else:
+        sql = "SELECT * FROM conversation_message WHERE case_id=%s ORDER BY seq ASC"
+        params = [case_id]
     with connect() as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         rows = cur.fetchall()
@@ -470,20 +522,35 @@ async def insert_usage(
     )
 
 
-def _sum_usage(since: datetime | None) -> dict[str, Any]:
+def _sum_usage(since: datetime | None, model: str | None = None) -> dict[str, Any]:
+    """汇总用量。
+
+    `model` 非空时**只统计该模型** —— 免费额度是按模型发放的，取"当前模型已用多少"
+    必须带这个过滤；不带就是全模型合计（用于"这个月一共花了多少钱"）。
+    """
     sql = ("SELECT COALESCE(SUM(amount),0), COALESCE(SUM(input_tokens+output_tokens),0),"
            " COUNT(*) FROM llm_usage")
+    where: list[str] = []
     params: list[Any] = []
     if since is not None:
-        sql += " WHERE created_at>=%s"
+        where.append("created_at>=%s")
         params.append(since)
+    if model:
+        where.append("model=%s")
+        params.append(model)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     with connect() as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         amount, tokens, calls = cur.fetchone()
     return {"amount": float(amount or 0), "tokens": int(tokens or 0), "calls": int(calls or 0)}
 
 
-async def sum_usage(since: datetime | None = None) -> dict[str, Any]:
-    """汇总用量。`since=None` 表示全部历史（用于免费额度的**全量累计估算**）。"""
+async def sum_usage(since: datetime | None = None, model: str | None = None) -> dict[str, Any]:
+    """汇总用量。
+
+    `since=None` 表示全部历史（用于免费额度的**全量累计估算**）；
+    `model` 传入时只算该模型（**额度判定必须传**，否则换模型后会继承旧模型的用量）。
+    """
     _require_uri()
-    return await run_sync(_sum_usage, since)
+    return await run_sync(_sum_usage, since, model)

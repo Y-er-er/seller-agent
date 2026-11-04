@@ -1,22 +1,69 @@
-"""卖家身份解析 —— **鉴权挂载点**（本轮唯一的"谁在操作"来源）。
+"""卖家身份解析 —— **鉴权的唯一挂载点**。
 
-现状：**单卖家**，恒返回 `default`。
-用户 2026-10-16 明确：本轮**只预留接口位**，不做登录，后续版本再迭代多卖家。
+2026-10-20 起这里不再是"恒返回 default"的占位：**所有 `/api/seller/*` 都要求登录**。
+实现见 `app/seller/auth.py` 与 `sql/seller_schema.sql`。
 
-将来接登录时，**只改本文件**：
-    从请求的会话 / Token 解析出 `seller_id`，并在此处做数据隔离校验（越权直接 403）。
-所有 `/api/seller/*` 端点都已 `Depends(require_seller)`，因此**无需改动任何端点**。
+为什么用 `X-Seller-Token` 请求头而不是 Cookie：
 
-⚠️ 已知缺口（不假装已解决）：现阶段 `/api/seller/*` **无任何鉴权**，
-能访问该端口者即可操作商品。服务默认只绑 `127.0.0.1` 以缩小暴露面。
+- 控制台可以**双击 html 用 file:// 打开**（`origin` 为 null），跨源 Cookie 需要
+  后端 `allow_credentials` + 精确 origin，而当前 CORS 是 `*`（本地开发）；
+  一旦打开 credentials，浏览器就会拒绝 `*`。请求头没有这个矛盾。
+- 代价是 Token 存在 `localStorage`（XSS 可读）。本项目页面**全部输出转义**且无第三方脚本；
+  若将来引入用户可编辑的富文本，需改回 HttpOnly Cookie 方案。
+
+两个依赖的分工：
+
+- `require_seller()` → 只要 `seller_id`（商品 / 知识库等按卖家隔离的接口用）；
+- `require_session()` → 需要**会话**的接口（AI 助手要 `thread_id`，登录态接口要 Token）。
 """
 
 from __future__ import annotations
 
-#: 单卖家形态下的固定卖家标识（与 DDL 中 `seller_id` 的默认值一致）
+from dataclasses import dataclass
+
+from fastapi import Depends, Header, HTTPException
+
+from app.seller import auth
+
+#: 单卖家时代的历史常量，保留给迁移脚本 / 测试引用（业务代码不要再用）。
 DEFAULT_SELLER_ID = "default"
 
 
-async def require_seller() -> str:
-    """返回当前卖家标识。多卖家迭代时在此处接入会话解析与数据隔离。"""
-    return DEFAULT_SELLER_ID
+@dataclass(frozen=True)
+class SellerSession:
+    """一次请求的登录态。**不含密码哈希等敏感字段。**"""
+
+    token: str
+    seller_id: str
+    username: str
+    display_name: str
+    thread_id: str
+
+    @property
+    def display(self) -> str:
+        return self.display_name or self.username
+
+
+async def require_session(
+    x_seller_token: str | None = Header(default=None, alias="X-Seller-Token"),
+) -> SellerSession:
+    """解析登录态；无效 / 过期 / 已退出统一 401。
+
+    ⚠️ 401 的文案要能指导下一步动作：前端收到 401 会**立刻弹登录窗**，
+    所以这里不区分"没登录"和"过期了"，只说"请重新登录"。
+    """
+    session = await auth.resolve(x_seller_token or "")
+    if not session:
+        raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
+    return SellerSession(
+        token=x_seller_token or "",
+        seller_id=session["seller_id"],
+        username=session["username"],
+        display_name=session.get("display_name") or session["username"],
+        thread_id=session["thread_id"],
+    )
+
+
+async def require_seller(session: SellerSession = Depends(require_session)) -> str:
+    """只要卖家标识的接口用这个（数据隔离靠 `seller_id`）。"""
+    return session.seller_id

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>咨询商家 · 本地演示</title>
+  <link rel="stylesheet" href="consultation.css?v=1">
+</head>
+<body>
+  <main class="consultation">
+    <header><strong>咨询商家</strong><span>本地演示 · 当前由人工客服接待</span></header>
+    <p class="notice">请勿输入真实姓名、电话或地址。本页未验证订单身份，不展示订单详情。</p>
+    <button id="newConversation" class="new-conversation" type="button" hidden>开始新咨询</button>
+    <div id="messages" class="messages" aria-live="polite"></div>
+    <div id="error" class="error" hidden></div>
+    <form id="form" class="composer">
+      <textarea id="message" maxlength="2000" placeholder="请输入咨询内容" required></textarea>
+      <button type="submit">发送</button>
+    </form>
+  </main>
+  <script src="consultation.js?v=1"></script>
+</body>
+</html>

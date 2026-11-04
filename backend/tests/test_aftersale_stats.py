@@ -3,6 +3,7 @@
 覆盖重点（都是"口径"问题，算错了会给出误导性的经营判断）：
   A `_summarize` 纯函数：空集 / 退货率口径 / 未判定不算"没退货" / 转人工计数 / 原因分布
   B `stats_for_goods`：商品不存在 → 404；无关联工单 → **如实说明原因**而不是返回一堆 0
+  C `health_ranking`：**批量聚合**（B10 钉住"不再逐商品查"，B11 钉住无商品时不发空 IN 查询）
 
 运行（无需 MySQL、无网络、不调用模型）：
     python backend/tests/test_aftersale_stats.py
@@ -40,11 +41,35 @@ class FakeGoodsRepo:
 
 
 class FakeChatRepo:
+    """假售后仓储。
+
+    `list_cases_by_goods` 保留 —— `stats_for_goods`（单品页）仍走它；
+    `aggregate_cases_by_goods` 是**批量版**，健康度榜走这条。
+    两个计数器用来钉住 N+1 不再回来（见 B10）。
+    """
+
     def __init__(self, cases):
         self.cases = cases
+        self.batch_calls = 0
+        self.per_goods_calls = 0
 
     async def list_cases_by_goods(self, goods_no, limit=200):
+        self.per_goods_calls += 1
         return [c for c in self.cases if c.get("goods_no") == goods_no][:limit]
+
+    async def aggregate_cases_by_goods(self, goods_nos):
+        """与 `_aggregate_cases_by_goods` 同口径：无工单的商品**不出现在返回里**。"""
+        self.batch_calls += 1
+        out = {}
+        for no in goods_nos:
+            rows = [c for c in self.cases if c.get("goods_no") == no]
+            if not rows:
+                continue
+            costly = sum(
+                1 for c in rows if str(c.get("decision_result") or "") in ("refund", "reship")
+            )
+            out[no] = {"total": len(rows), "costly": costly}
+        return out
 
 
 def group_a() -> None:
@@ -128,6 +153,30 @@ async def group_b() -> None:
           len(ranking) == 1 and ranking[0]["goods_no"] == "G-0001", str(ranking))
     ranking_loose = await aftersale_stats.health_ranking("s", limit=3, min_cases=1)
     check("B9 放宽样本门槛后仍只含有关联工单的商品", len(ranking_loose) == 1, str(ranking_loose))
+
+    # B10 N+1 回归：健康度榜**不许**再逐商品查。
+    # 为什么这条必须存在：连接层每次查询新建一条 MySQL 连接（远程库握手实测约 45ms），
+    # 逐商品查 = 每个商品一次握手，22 件商品就要 ~1 秒，"概览"由此慢成 0.95s。
+    # 而且它**随商品数线性恶化**，所以这是正确性问题，不是"优化一下"。
+    fake = FakeChatRepo([
+        {"goods_no": "G-0001", "decision_result": "refund"},
+        {"goods_no": "G-0001", "decision_result": "reject"},
+        {"goods_no": "G-9999", "decision_result": "refund"},
+    ])
+    aftersale_stats.chat_repo = fake
+    await aftersale_stats.health_ranking("s", limit=3, min_cases=1)
+    check("B10 健康度榜只发 1 次批量查询、0 次逐商品查询",
+          fake.batch_calls == 1 and fake.per_goods_calls == 0,
+          f"batch={fake.batch_calls} per_goods={fake.per_goods_calls}")
+
+    # B11 无商品时不该白跑一次 SQL（空 IN 列表是语法错误，必须提前返回）
+    empty = FakeChatRepo([])
+    aftersale_stats.goods_repo = FakeGoodsRepo(None)
+    aftersale_stats.chat_repo = empty
+    out_empty = await aftersale_stats.health_ranking("s", limit=3)
+    check("B11 没有商品时直接返回空榜，且不发起查询",
+          out_empty == [] and empty.batch_calls == 0,
+          f"{out_empty} batch={empty.batch_calls}")
 
 
 async def main() -> int:

@@ -29,7 +29,7 @@ from app.seller.deps import require_seller
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/seller", tags=["卖家控制台"])
+router = APIRouter(prefix="/api/seller", tags=["商铺经营Agent"])
 
 
 # ============================================================
@@ -150,8 +150,28 @@ async def bulk_goods(payload: BulkPayload, seller_id: str = Depends(require_sell
             detail="批量删除需显式确认：请在请求体中传 confirm=true（界面应先弹二次确认）",
         )
     try:
-        return await goods_service.bulk_action(
-            seller_id, payload.goods_ids, payload.action, price_delta=payload.price_delta
+        # 批量动作当场完成，但**留一条任务记录** —— 失败明细不能只在这一次返回值里闪过，
+        # 事后要能查"上次批量删了哪几件、失败哪件"（任务中心可见）。
+        from app.tasks import runner as task_runner
+
+        label = {
+            "on_shelf": "批量上架", "off_shelf": "批量下架",
+            "delete": "批量删除", "price_delta": "批量调价",
+        }.get(payload.action, payload.action)
+
+        async def _body(progress, seller_id: str) -> dict[str, Any]:
+            r = await goods_service.bulk_action(
+                seller_id, payload.goods_ids, payload.action, price_delta=payload.price_delta
+            )
+            done = len(r.get("done") or [])
+            failed = len(r.get("failed") or [])
+            return {
+                "summary": f"{label}：成功 {done} 件" + (f"，失败 {failed} 件" if failed else ""),
+                **r,
+            }
+
+        return await task_runner.run_inline(
+            "bulk_op", f"{label}（{len(payload.goods_ids)} 件）", _body, seller_id=seller_id
         )
     except GoodsError as exc:
         _fail(exc)
@@ -196,6 +216,54 @@ async def create_goods(payload: GoodsCreate, seller_id: str = Depends(require_se
         return await goods_service.create_goods(
             seller_id, **payload.model_dump(exclude={"status"}), status=payload.status
         )
+    except GoodsError as exc:
+        _fail(exc)
+
+
+# ============================================================
+# 回收站（软删除：默认保留 7 天，到期彻底删除）
+# ⚠️ 这些路由必须定义在 `/goods/{goods_id}` **之前**，否则 "trash" 会被当成 goods_id
+# ============================================================
+
+
+@router.get("/goods/trash")
+async def list_goods_trash(seller_id: str = Depends(require_seller)) -> dict[str, Any]:
+    """回收站列表（含「剩余可恢复天数」）。
+
+    打开时顺带清理**已到期**的商品 —— 不引入定时任务，靠访问驱动即可。
+    """
+    try:
+        await goods_service.cleanup_expired_trash()
+        items = await goods_service.list_trash(seller_id)
+        return {"items": items, "total": len(items)}
+    except GoodsError as exc:
+        _fail(exc)
+
+
+@router.post("/goods/{goods_id}/restore")
+async def restore_goods(goods_id: int, seller_id: str = Depends(require_seller)) -> dict[str, Any]:
+    """从回收站恢复（原状态一并回来）。"""
+    try:
+        return await goods_service.restore_goods(seller_id, goods_id)
+    except GoodsError as exc:
+        _fail(exc)
+
+
+@router.delete("/goods/{goods_id}/purge")
+async def purge_goods(
+    goods_id: int, confirm: bool = Query(default=False), seller_id: str = Depends(require_seller)
+) -> dict[str, Any]:
+    """**彻底删除**（不可恢复）：商品 + 图片 + 文件。
+
+    `confirm=true` 必传 —— 与既有删除接口同一规矩（界面应先弹二次确认）。
+    """
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="彻底删除不可恢复：请在请求中传 confirm=true（界面应先弹二次确认）",
+        )
+    try:
+        return await goods_service.purge_goods(seller_id, goods_id)
     except GoodsError as exc:
         _fail(exc)
 
@@ -320,12 +388,15 @@ async def ai_suggest_price(goods_id: int, seller_id: str = Depends(require_selle
 async def ai_generate_cover(
     goods_id: int, payload: CoverPayload | None = None, seller_id: str = Depends(require_seller)
 ) -> dict[str, Any]:
-    """为商品生成宣传图（**真实计费**：1 张图 + 1 次文本调用）。
+    """为商品**投递一个宣传图生成任务**（**真实计费**：1 张图 + 1 次文本调用）。
+
+    返回**任务行**（`id` / `status` / `progress`），**不是**生成结果 ——
+    本接口立即返回，因为生图要 30—60 秒；同步等待会让"关掉页面就丢结果"。进度请查任务中心。
 
     ⚠️ 需先在阿里云百炼**开通图像模型**并配置 `IMAGE_MODEL`（如 `wanx2.1-t2i-turbo`）；
     未开通/未配置时**明确报错**，不假装能生成。
 
-    生成的图会**立刻转存**到自己的对象存储（官方临时 URL 约 5 分钟过期），
+    任务成功后图片会**立刻转存**到自己的对象存储（官方临时 URL 约 5 分钟过期），
     并登记为商品图片 —— 首张自动成为主图。
     """
     from app.goods import image_ai
@@ -336,6 +407,59 @@ async def ai_generate_cover(
         )
     except GoodsError as exc:
         _fail(exc)
+
+
+# ============================================================
+# 任务中心（长任务 + 批量操作记录）
+# ============================================================
+
+
+@router.get("/tasks")
+async def list_tasks(
+    status: str = "", limit: int = 50, seller_id: str = Depends(require_seller)
+) -> dict[str, Any]:
+    """任务列表（按创建时间倒序）。
+
+    `status` 可选：`queued` / `running` / `done` / `failed` / `interrupted`。
+    长任务（AI 生图）与批量操作都在这里 —— 这是"AI 代操作"的**事后可追溯**入口。
+    """
+    from app.db import task_repo
+    from app.tasks.retry import RETRYABLE_KINDS
+
+    items = await task_repo.list_tasks(seller_id, status=status, limit=min(max(limit, 1), 200))
+    # 由**后端**判定"能不能重试"，前端不要各自维护一份白名单（会漂移）
+    for item in items:
+        item["retryable"] = (
+            str(item.get("status")) in ("failed", "interrupted")
+            and str(item.get("kind")) in RETRYABLE_KINDS
+        )
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/tasks/{task_id}/retry")
+async def retry_task(task_id: int, seller_id: str = Depends(require_seller)) -> dict[str, Any]:
+    """重试**可安全重试**的失败任务（当前只有 AI 生图）。
+
+    ⚠️ 生图重试会**再产生一次费用**（按张计费），界面应先告知卖家。
+    批量操作类任务**不允许重试**（会把已成功的部分再做一遍），返回 409。
+    """
+    from app.tasks import retry as retry_mod
+
+    try:
+        return await retry_mod.retry(seller_id, task_id)
+    except GoodsError as exc:
+        _fail(exc)
+
+
+@router.get("/tasks/{task_id}")
+async def get_task(task_id: int, seller_id: str = Depends(require_seller)) -> dict[str, Any]:
+    """单个任务详情（含进度、结果摘要、失败明细）。"""
+    from app.db import task_repo
+
+    row = await task_repo.get_task(task_id, seller_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在：{task_id}")
+    return row
 
 
 @router.get("/goods/{goods_id}/aftersale-stats")
@@ -362,6 +486,11 @@ async def serve_upload(name: str) -> Response:
 
     ⚠️ **一律经 `ObjectStorage` 端口读取** —— 路径穿越校验在适配器内完成；
     路由层不得自己拼文件路径，否则会绕过校验。
+
+    ⚠️ **本端点刻意不要求登录**：它被 `<img src>` 直接引用，而 `<img>` 无法携带
+    `X-Seller-Token` 请求头。要给它加鉴权，得改成"签名 URL"或"Cookie 会话"，
+    属于独立改造。**已知边界**：知道完整路径的人可以读到图片（路径里含日期 +
+    卖家 id + 32 位随机文件名，不可枚举）。
     """
     data = await get_storage().get(name)
     if data is None:

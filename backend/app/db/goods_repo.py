@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from app.config import settings
@@ -106,16 +107,9 @@ async def update_goods(goods_id: int, seller_id: str, **fields: Any) -> bool:
     return await run_sync(_update_goods, goods_id, seller_id, fields)
 
 
-def _delete_goods(goods_id: int, seller_id: str) -> bool:
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM goods WHERE id=%s AND seller_id=%s", (goods_id, seller_id))
-        return cur.rowcount > 0
-
-
-async def delete_goods(goods_id: int, seller_id: str) -> bool:
-    """删除商品行。**图片行与对象存储文件由 service 层负责清理**。"""
-    _require_uri()
-    return await run_sync(_delete_goods, goods_id, seller_id)
+# ⚠️ 原有的「物理删除商品行」已移除：删除语义现在是**移入回收站**（`soft_delete`），
+#    真正物理删除只允许走 `purge_hard`（且仅限回收站内的商品）。
+#    留一个随手可用的物理删除入口，早晚会被误用。
 
 
 def _next_goods_no(seller_id: str) -> str:
@@ -173,10 +167,73 @@ async def reorder_goods(seller_id: str, ordered_ids: list[int]) -> int:
 # ============================================================
 
 
+#: 允许排序的列（**白名单**：排序字段来自外部输入，绝不能直接拼进 SQL）
+_SORTABLE = {"price": "price", "stock": "stock", "updated_at": "updated_at", "created_at": "created_at"}
+
+
+def _day_start(value: str) -> str:
+    """把日期补成当天的 00:00:00；已是完整时间则原样返回。"""
+    text = str(value or "").strip()
+    return f"{text} 00:00:00" if len(text) == 10 else text
+
+
+def _day_end(value: str) -> str:
+    """把日期补成当天的 23:59:59 —— 否则 `<= 2026-10-19` 会把当天创建的全部漏掉。"""
+    text = str(value or "").strip()
+    return f"{text} 23:59:59" if len(text) == 10 else text
+
+
+#: 关键词切段：连续中文为一个词，连续字母数字为一个词。中文标点/空格自动丢弃。
+#: 为什么不用第三方分词：这里只需要"把中英混排的短语切成能各自命中的片段"，
+#: 一个正则就够；引入分词库会为一个 LIKE 条件增加一处依赖（需审批）。
+_KEYWORD_SPLIT = re.compile(r"[\u4e00-\u9fa5]+|[A-Za-z0-9]+")
+
+
+def keyword_terms(q: str) -> list[str]:
+    """把搜索词切成若干片段（去重保序）。例：「英伟达5090显卡」→ 英伟达 / 5090 / 显卡。"""
+    terms: list[str] = []
+    for raw in _KEYWORD_SPLIT.findall(str(q or "")):
+        if raw and raw not in terms:
+            terms.append(raw)
+    return terms
+
+
+def _like(term: str) -> str:
+    """构造 LIKE 参数：转义 `%` / `_` / `\\`，否则卖家输个 `%` 就等于全表匹配。"""
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def keyword_where(q: str) -> tuple[str, list[Any]]:
+    """关键词的 WHERE 片段与参数 —— **逐片段 AND**，每片段命中标题或编号即可。
+
+    ⚠️ 这里曾经是整串 `title LIKE '%整串%'`，2026-10-21 实测翻车：
+    卖家问「联想笔记本电脑与英伟达5090显卡差多少钱」，库里那件叫
+    **「英伟达RTX5090显卡」**（编号 G-0012，就排在列表第一行）。整串 LIKE
+    一条都匹配不上 → 工具返回「没有符合条件的商品」→ 助手据此断言
+    「咱们店里目前并没有售卖这款商品」。**数据没错，是检索把"没匹配上"说成了"没有"。**
+
+    切成片段后：「英伟达」+「5090」+「显卡」三段都能在 `英伟达RTX5090显卡` 里命中。
+    片段之间用 AND（不是 OR）—— 否则「联想 显卡」会把半店的商品都捞出来。
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    for term in keyword_terms(q):
+        clauses.append("(title LIKE %s OR goods_no LIKE %s)")
+        pattern = _like(term)
+        params.extend([pattern, pattern])
+    return " AND ".join(clauses), params
+
+
 def _list_goods(
-    seller_id: str, scope: str, q: str, status: str, low_stock_only: bool, limit: int
+    seller_id: str, scope: str, q: str, status: str, low_stock_only: bool, limit: int,
+    category: str = "",
+    price_min: float | None = None, price_max: float | None = None,
+    stock_min: int | None = None, stock_max: int | None = None,
+    sort: str = "", order: str = "asc",
+    created_after: str = "", created_before: str = "",
 ) -> list[dict[str, Any]]:
-    where = ["seller_id=%s"]
+    where = ["seller_id=%s", "deleted_at IS NULL"]
     params: list[Any] = [seller_id]
     if scope == "shelf":
         where.append("status=%s")
@@ -185,17 +242,48 @@ def _list_goods(
         where.append("status=%s")
         params.append(status)
     if q:
-        where.append("(title LIKE %s OR goods_no LIKE %s)")
-        params.extend([f"%{q}%", f"%{q}%"])
+        # 逐片段 AND（见 `keyword_where` 的注释：整串匹配会把"没匹配上"变成"没有"）
+        kw_clause, kw_params = keyword_where(q)
+        if kw_clause:
+            where.append(kw_clause)
+            params.extend(kw_params)
     if low_stock_only:
-        where.append("stock_alert > 0 AND stock <= stock_alert")
+        # 与 `_list_low_stock` 同口径：断货（stock<=0）不看阈值，一律算低库存
+        where.append("(stock <= 0 OR (stock_alert > 0 AND stock <= stock_alert))")
+    # ---- 与界面筛选**同口径**的区间条件（闭区间）----
+    if category:
+        where.append("category=%s")
+        params.append(category)
+    if price_min is not None:
+        where.append("price >= %s")
+        params.append(price_min)
+    if price_max is not None:
+        where.append("price <= %s")
+        params.append(price_max)
+    if stock_min is not None:
+        where.append("stock >= %s")
+        params.append(stock_min)
+    if stock_max is not None:
+        where.append("stock <= %s")
+        params.append(stock_max)
+    # 创建时间：接受 `YYYY-MM-DD`；`before` 补到当天 23:59:59（否则会漏掉当天的商品）
+    if created_after:
+        where.append("created_at >= %s")
+        params.append(_day_start(created_after))
+    if created_before:
+        where.append("created_at <= %s")
+        params.append(_day_end(created_before))
     params.append(limit)
 
-    # 陈列顺序：置顶优先 → 排序值 → 越新越前
-    sql = (
-        "SELECT * FROM goods WHERE " + " AND ".join(where) +
-        " ORDER BY pinned DESC, sort_no ASC, id DESC LIMIT %s"
-    )
+    col = _SORTABLE.get(str(sort or "").strip())
+    if col:
+        direction = "DESC" if str(order or "").strip().lower() == "desc" else "ASC"
+        order_sql = f" ORDER BY {col} {direction}, id DESC"
+    else:
+        # 默认：陈列顺序 —— 置顶优先 → 排序值 → 越新越前
+        order_sql = " ORDER BY pinned DESC, sort_no ASC, id DESC"
+
+    sql = "SELECT * FROM goods WHERE " + " AND ".join(where) + order_sql + " LIMIT %s"
     with connect() as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         rows = cur.fetchall()
@@ -211,15 +299,37 @@ async def list_goods(
     status: str = "",
     low_stock_only: bool = False,
     limit: int = 200,
+    category: str = "",
+    price_min: float | None = None,
+    price_max: float | None = None,
+    stock_min: int | None = None,
+    stock_max: int | None = None,
+    sort: str = "",
+    order: str = "asc",
+    created_after: str = "",
+    created_before: str = "",
 ) -> list[dict[str, Any]]:
-    """商品列表。`scope='shelf'` 只看已上架（陈列视图），`'all'` 全量（管理视图）。"""
+    """商品列表。`scope='shelf'` 只看已上架（陈列视图），`'all'` 全量（管理视图）。
+
+    筛选参数与**界面筛选一一对应**（AI 要能做人能做的事，口径必须一致）。
+    `sort` 支持 price / stock / updated_at / created_at；`order` 为 asc / desc。
+    创建时间接受 `YYYY-MM-DD`（`before` 会自动补到当天 23:59:59）。
+    """
     _require_uri()
-    return await run_sync(_list_goods, seller_id, scope, q, status, low_stock_only, limit)
+    return await run_sync(
+        _list_goods, seller_id, scope, q, status, low_stock_only, limit,
+        category, price_min, price_max, stock_min, stock_max, sort, order,
+        created_after, created_before,
+    )
 
 
-def _get_goods(goods_id: int, seller_id: str) -> dict[str, Any] | None:
+def _get_goods(goods_id: int, seller_id: str, include_deleted: bool = False) -> dict[str, Any] | None:
+    """读商品。默认**排除回收站里的**；`include_deleted=True` 供恢复 / 彻底删除使用。"""
+    sql = "SELECT * FROM goods WHERE id=%s AND seller_id=%s"
+    if not include_deleted:
+        sql += " AND deleted_at IS NULL"
     with connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT * FROM goods WHERE id=%s AND seller_id=%s", (goods_id, seller_id))
+        cur.execute(sql, (goods_id, seller_id))
         row = cur.fetchone()
         if row is None:
             return None
@@ -235,16 +345,129 @@ def _get_goods(goods_id: int, seller_id: str) -> dict[str, Any] | None:
     return goods
 
 
-async def get_goods(goods_id: int, seller_id: str = DEFAULT_SELLER_ID) -> dict[str, Any] | None:
-    """商品详情（含图片列表）；不存在返回 `None`。"""
+async def get_goods(
+    goods_id: int, seller_id: str = DEFAULT_SELLER_ID, *, include_deleted: bool = False
+) -> dict[str, Any] | None:
+    """商品详情（含图片列表）；默认**排除回收站里的**。"""
     _require_uri()
-    return await run_sync(_get_goods, goods_id, seller_id)
+    return await run_sync(_get_goods, goods_id, seller_id, include_deleted)
+
+
+# ============================================================
+# 回收站（软删除）—— 删除只在 deleted_at 上打标记，**不动 status**，
+# 所以恢复时原状态（已上架/草稿）会自动回来，不需要另存一份。
+# ============================================================
+
+
+def _list_categories(seller_id: str) -> list[dict[str, Any]]:
+    """现有类目清单（按商品数降序）。
+
+    类目不是独立表，而是从商品上聚合出来的 —— 这样"新建类目"就是给商品填一个新名字，
+    不会出现"类目表里有、却没有商品"的空壳类目。
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT category, COUNT(*) AS cnt FROM goods "
+            "WHERE seller_id=%s AND deleted_at IS NULL AND COALESCE(category,'') <> '' "
+            "GROUP BY category ORDER BY cnt DESC, category ASC",
+            (seller_id,),
+        )
+        return [{"category": str(r[0]), "count": int(r[1])} for r in cur.fetchall()]
+
+
+async def list_categories(seller_id: str = DEFAULT_SELLER_ID) -> list[dict[str, Any]]:
+    """现有类目清单（含每个类目下的商品数）。"""
+    _require_uri()
+    return await run_sync(_list_categories, seller_id)
+
+
+def _list_trash(seller_id: str, limit: int) -> list[dict[str, Any]]:
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT *, DATEDIFF(NOW(), deleted_at) AS days_since "
+            "FROM goods WHERE seller_id=%s AND deleted_at IS NOT NULL "
+            "ORDER BY deleted_at DESC LIMIT %s",
+            (seller_id, limit),
+        )
+        rows = cur.fetchall()
+        columns = [d[0] for d in cur.description]
+    return [_normalize(dict(zip(columns, row))) for row in rows]
+
+
+async def list_trash(seller_id: str = DEFAULT_SELLER_ID, limit: int = 100) -> list[dict[str, Any]]:
+    """回收站列表（按删除时间倒序）。"""
+    _require_uri()
+    return await run_sync(_list_trash, seller_id, limit)
+
+
+def _soft_delete(goods_id: int, seller_id: str) -> bool:
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE goods SET deleted_at=NOW() "
+            "WHERE id=%s AND seller_id=%s AND deleted_at IS NULL",
+            (goods_id, seller_id),
+        )
+        return cur.rowcount > 0
+
+
+async def soft_delete(goods_id: int, seller_id: str = DEFAULT_SELLER_ID) -> bool:
+    _require_uri()
+    return await run_sync(_soft_delete, goods_id, seller_id)
+
+
+def _restore(goods_id: int, seller_id: str) -> bool:
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE goods SET deleted_at=NULL "
+            "WHERE id=%s AND seller_id=%s AND deleted_at IS NOT NULL",
+            (goods_id, seller_id),
+        )
+        return cur.rowcount > 0
+
+
+async def restore(goods_id: int, seller_id: str = DEFAULT_SELLER_ID) -> bool:
+    """从回收站恢复（原状态一并回来）。"""
+    _require_uri()
+    return await run_sync(_restore, goods_id, seller_id)
+
+
+def _purge_hard(goods_id: int, seller_id: str) -> bool:
+    """彻底删除。**仅限回收站里的** —— 防止误删正常商品。"""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM goods WHERE id=%s AND seller_id=%s AND deleted_at IS NOT NULL",
+            (goods_id, seller_id),
+        )
+        return cur.rowcount > 0
+
+
+async def purge_hard(goods_id: int, seller_id: str = DEFAULT_SELLER_ID) -> bool:
+    _require_uri()
+    return await run_sync(_purge_hard, goods_id, seller_id)
+
+
+def _list_expired(days: int) -> list[dict[str, Any]]:
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, seller_id, goods_no, title, deleted_at FROM goods "
+            "WHERE deleted_at IS NOT NULL AND deleted_at < (NOW() - INTERVAL %s DAY)",
+            (days,),
+        )
+        columns = [d[0] for d in cur.description]
+        return [_normalize(dict(zip(columns, row))) for row in cur.fetchall()]
+
+
+async def list_expired(days: int) -> list[dict[str, Any]]:
+    """回收站里超过保留期的商品（供清理任务使用）。"""
+    _require_uri()
+    return await run_sync(_list_expired, days)
 
 
 def _count_by_status(seller_id: str) -> dict[str, int]:
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT status, COUNT(*) FROM goods WHERE seller_id=%s GROUP BY status", (seller_id,)
+            "SELECT status, COUNT(*) FROM goods WHERE seller_id=%s AND deleted_at IS NULL "
+            "GROUP BY status", (seller_id,)
         )
         return {str(row[0]): int(row[1]) for row in cur.fetchall()}
 
@@ -256,11 +479,19 @@ async def count_by_status(seller_id: str = DEFAULT_SELLER_ID) -> dict[str, int]:
 
 
 def _list_low_stock(seller_id: str, limit: int) -> list[dict[str, Any]]:
+    """低库存 / 断货商品。
+
+    ⚠️ **断货（`stock <= 0`）不论有没有设预警阈值都要报** ——
+    之前写成 `stock_alert > 0 AND stock <= stock_alert`，导致
+    "没设阈值 + 库存 0" 的商品被静默放过（实测：库存 0 的风扇不在巡检里）。
+    断货是绝对异常，比"低于自定义线"更严重。
+    """
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT id, goods_no, title, stock, stock_alert FROM goods "
-            "WHERE seller_id=%s AND stock_alert > 0 AND stock <= stock_alert "
-            "ORDER BY (stock_alert - stock) DESC LIMIT %s",
+            "WHERE seller_id=%s AND deleted_at IS NULL "
+            "AND (stock <= 0 OR (stock_alert > 0 AND stock <= stock_alert)) "
+            "ORDER BY (stock <= 0) DESC, (stock_alert - stock) DESC LIMIT %s",
             (seller_id, limit),
         )
         columns = [d[0] for d in cur.description]

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -23,11 +24,21 @@ from typing import Any, Awaitable, Callable
 DOMAIN_GOODS = "goods"
 DOMAIN_DISPLAY = "display"
 DOMAIN_AFTERSALE = "aftersale"
+#: 运维域：任务 / 操作日志 / 撤销 —— 跨域的**可观测与补救**手段
+DOMAIN_OPS = "ops"
+#: 知识域：卖家自建资料的检索 —— 不是"业务动作"，是**作答依据的来源**
+DOMAIN_KNOWLEDGE = "knowledge"
+DOMAIN_ORDERS = "orders"
+DOMAIN_SERVICE = "service"
 
 DOMAIN_LABELS = {
     DOMAIN_GOODS: "商品",
     DOMAIN_DISPLAY: "陈列",
     DOMAIN_AFTERSALE: "售后",
+    DOMAIN_OPS: "运维",
+    DOMAIN_KNOWLEDGE: "知识库",
+    DOMAIN_ORDERS: "订单",
+    DOMAIN_SERVICE: "客服",
 }
 
 
@@ -80,6 +91,41 @@ class ToolSpec:
     summary_builder: Callable[[dict[str, Any]], str] | None = None
     #: 影响明细（界面确认卡展开显示，如"将删除 3 件商品及 5 张图片"）；可为空
     impact_builder: Callable[[AssistantContext, dict[str, Any]], Awaitable[str]] | None = None
+    #: **失败处理策略**：`retryable`（只读，可自动重试）/ `degrade`（有回落）/
+    #: `fail_fast`（写操作，失败即报）。留空则按命名约定推断（见 `failure_policy`）。
+    policy: str = ""
+    #: **幂等身份键**：声明"哪些参数决定这是不是同一件事"。
+    #: 留空 = 全部参数参与比对（严格）；指定字段 = 只比这些字段（宽松）。
+    #: 例如 `generate_copy` 对同一商品只该有一张待确认卡 → `("goods_no",)`。
+    idempotent_by: tuple[str, ...] = ()
+    #: **确认卡上的补充说明**：告诉卖家"点确认之后会发生什么、去哪看结果"。
+    #: 只写**卖家需要知道的期待值**（异步？多久？会不会改数据？），不写技术细节。
+    #: 实测踩到：确认生图后卡片消失、任务中心还没刷新，卖家以为"点了没反应"。
+    confirm_note: str = ""
+
+    def identity_key(self, args: dict[str, Any]) -> str:
+        """幂等身份键 —— 判断"是不是同一件事"，而不是"参数是否完全一样"。
+
+        ⚠️ 为什么不能只比全参数：模型两次调用**可能传不同的参数组合**
+        （一次带 `style`、一次不带），全参数比对会判成"两件事" → **重复建卡**。
+        实测：同一商品出现两张「生成文案」确认卡，而它们本质是同一件事。
+        """
+        payload = args or {}
+        keys = self.idempotent_by or tuple(sorted(payload.keys()))
+        return json.dumps(
+            {k: payload.get(k) for k in keys}, sort_keys=True, ensure_ascii=False
+        )
+
+    @property
+    def failure_policy(self) -> str:
+        """失败策略。显式声明优先；否则 **`list_` / `get_` 开头视为只读 → 可重试**。
+
+        用命名约定而不是给每个工具手工标注：命名本身已经表达了"只读"，
+        再标一遍是重复信息，而且容易漏标（漏标 = 悄悄失去重试保护）。
+        """
+        if self.policy:
+            return self.policy
+        return "retryable" if self.name.startswith(("list_", "get_")) else "fail_fast"
 
     @property
     def needs_confirm(self) -> bool:
@@ -137,6 +183,11 @@ def register(spec: ToolSpec) -> ToolSpec:
         raise ValueError(
             f"需要确认的工具（destructive / billable）必须提供 summary_template 或 "
             f"summary_builder（确认卡需要它）：{spec.name}"
+        )
+    # 有副作用的工具若被标成 retryable，重试就等于重复执行（计费工具还会重复计费）
+    if spec.failure_policy == "retryable" and spec.needs_confirm:
+        raise ValueError(
+            f"有副作用的工具不能标 retryable（重试会导致重复执行）：{spec.name}"
         )
     _REGISTRY[spec.name] = spec
     return spec

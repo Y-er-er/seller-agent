@@ -8,6 +8,12 @@
   G5  暂停**首次汇报一次**（不刷日志与事件表）
   G6  precheck 的「新会话 / 进行中」语义
   G7  DB 不可达时降级（degraded=true）但仍能给出判定
+  G8  外部基线抵扣
+  G9  额度到期 → 暂停（可与耗尽同等对待，但到期优先）
+  G10 到期日解析容错
+  G11 基线吃满额度
+  G12 **额度按「当前模型」算**：换模型后不被旧模型的用量拖累（回归：曾因此把对话卡死）
+  G13 反向断言：当前模型自己用超了**照样停**（G12 不是"改成永不暂停"）
 """
 
 from __future__ import annotations
@@ -21,6 +27,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.chat import cost_gate  # noqa: E402
 from app.config import settings  # noqa: E402
+
+#: 用例统一用一个假模型名，**不依赖 `.env` 里真实的 `LLM_TEXT_MODEL`**
+#: （否则换个模型配置测试就红，属"断言与配置耦合"）
+MODEL = "test-model"
 
 failures: list[str] = []
 
@@ -56,10 +66,13 @@ class FakeRepo:
         )
         return True
 
-    async def sum_usage(self, since=None):
+    async def sum_usage(self, since=None, model=None):
+        """`model` 非空时只算该模型 —— 与真仓储的 SQL 过滤保持一致。"""
         if self.fail_sum:
             raise RuntimeError("simulated db outage")
         rows = [r for r in self.usages if since is None or r["created_at"] >= since]
+        if model is not None:
+            rows = [r for r in rows if r["model"] == model]
         return {
             "amount": sum(r["amount"] for r in rows),
             "tokens": sum(r["input_tokens"] + r["output_tokens"] for r in rows),
@@ -74,6 +87,7 @@ class FakeRepo:
 # 保存原始配置，测试结束后恢复（避免影响其他测试）
 _ORIG = {
     "uri": settings.mysql_uri,
+    "model": settings.llm_text_model,
     "price_in": settings.price_input_per_1k,
     "price_out": settings.price_output_per_1k,
     "warning": settings.cost_warning_cny,
@@ -86,6 +100,7 @@ _ORIG = {
 
 def restore() -> None:
     settings.mysql_uri = _ORIG["uri"]
+    settings.llm_text_model = _ORIG["model"]
     settings.price_input_per_1k = _ORIG["price_in"]
     settings.price_output_per_1k = _ORIG["price_out"]
     settings.cost_warning_cny = _ORIG["warning"]
@@ -105,6 +120,7 @@ def setup(
     expire: str = "",
 ) -> None:
     settings.mysql_uri = "mysql+pymysql://fake:fake@127.0.0.1:3306/fake"
+    settings.llm_text_model = MODEL
     settings.price_input_per_1k = price_in
     settings.price_output_per_1k = price_out
     settings.cost_warning_cny = 0.1
@@ -153,7 +169,7 @@ async def amain() -> int:
     fake = FakeRepo()
     setup(fake, price_in=1.0, price_out=0.0)
     fake.usages.append(
-        {"case_id": "C", "seq": 1, "model": "m", "input_tokens": 100, "output_tokens": 0,
+        {"case_id": "C", "seq": 1, "model": MODEL, "input_tokens": 100, "output_tokens": 0,
          "amount": 0.1, "created_at": datetime.now()}
     )
     status = await cost_gate.evaluate()
@@ -165,7 +181,7 @@ async def amain() -> int:
     fake = FakeRepo()
     setup(fake, price_in=1.0, price_out=0.0)
     fake.usages.append(
-        {"case_id": "C", "seq": 1, "model": "m", "input_tokens": 200_000, "output_tokens": 0,
+        {"case_id": "C", "seq": 1, "model": MODEL, "input_tokens": 200_000, "output_tokens": 0,
          "amount": 200.0, "created_at": datetime.now()}
     )
     status = await cost_gate.evaluate()
@@ -177,7 +193,7 @@ async def amain() -> int:
     fake = FakeRepo()
     setup(fake, price_in=0.0, price_out=0.0, quota=1000)
     fake.usages.append(
-        {"case_id": "C", "seq": 1, "model": "m", "input_tokens": 1200, "output_tokens": 0,
+        {"case_id": "C", "seq": 1, "model": MODEL, "input_tokens": 1200, "output_tokens": 0,
          "amount": 0.0, "created_at": datetime.now()}
     )
     status = await cost_gate.evaluate()
@@ -191,7 +207,7 @@ async def amain() -> int:
     fake = FakeRepo()
     setup(fake, price_in=0.0, price_out=0.0, quota=1_000_000)
     fake.usages.append(
-        {"case_id": "C", "seq": 1, "model": "m", "input_tokens": 5000, "output_tokens": 0,
+        {"case_id": "C", "seq": 1, "model": MODEL, "input_tokens": 5000, "output_tokens": 0,
          "amount": 0.0, "created_at": datetime.now()}
     )
     status = await cost_gate.evaluate()
@@ -205,7 +221,7 @@ async def amain() -> int:
     fake = FakeRepo()
     setup(fake, price_in=1.0, price_out=0.0)
     fake.usages.append(
-        {"case_id": "C", "seq": 1, "model": "m", "input_tokens": 100, "output_tokens": 0,
+        {"case_id": "C", "seq": 1, "model": MODEL, "input_tokens": 100, "output_tokens": 0,
          "amount": 0.1, "created_at": datetime.now()}
     )
     await cost_gate.precheck(ongoing=False)
@@ -251,7 +267,7 @@ async def amain() -> int:
 
     # 本项目再消耗后，剩余额度继续下降
     fake.usages.append(
-        {"case_id": "C", "seq": 1, "model": "m", "input_tokens": 500, "output_tokens": 0,
+        {"case_id": "C", "seq": 1, "model": MODEL, "input_tokens": 500, "output_tokens": 0,
          "amount": 0.0, "created_at": datetime.now()}
     )
     status = await cost_gate.evaluate()
@@ -310,6 +326,52 @@ async def amain() -> int:
           f"实得 reason={status.reason} used={status.quota_used}")
     check("G11 剩余额度为负（已透支）", status.quota_remaining < 0,
           f"实得 {status.quota_remaining}")
+
+    # ============================================================
+    # G12 额度按「当前模型」算：换模型后不被旧模型的用量拖累（**回归**）
+    # ============================================================
+    # 真实踩到的情形：qwen3.7-max 用了 60.7 万，换到 -preview 后新模型用了 39.5 万，
+    # 全模型合计 100.2 万 ≥ 100 万 → 新模型明明还剩 60 万却被判「额度耗尽」，
+    # 界面上每一轮都回同一句"已暂停新会话"，点"继续"也一样（死循环）。
+    fake = FakeRepo()
+    setup(fake, price_in=0.0, price_out=0.0, quota=1_000_000)
+    fake.usages.append(
+        {"case_id": None, "seq": None, "model": "old-model",
+         "input_tokens": 700_000, "output_tokens": 0,
+         "amount": 0.0, "created_at": datetime.now()}
+    )
+    fake.usages.append(
+        {"case_id": None, "seq": None, "model": MODEL,
+         "input_tokens": 300_000, "output_tokens": 0,
+         "amount": 0.0, "created_at": datetime.now()}
+    )
+    status = await cost_gate.evaluate()
+    check("G12 旧模型用量不占新模型的额度（全模型已超、当前模型未超 → 不暂停）",
+          status.paused is False, f"实得 paused={status.paused} reason={status.reason}")
+    check("G12 额度判定用当前模型口径（30 万，不是全量的 100 万）",
+          status.model_tokens == 300_000 and status.quota_used == 300_000,
+          f"model_tokens={status.model_tokens} quota_used={status.quota_used}")
+    check("G12 状态里仍如实给出全模型累计（展示用，不参与额度判定）",
+          status.total_tokens == 1_000_000, f"total_tokens={status.total_tokens}")
+    check("G12 状态里点名判定所依据的模型",
+          status.model == MODEL and status.to_dict()["model"] == MODEL,
+          f"model={status.model}")
+
+    # ============================================================
+    # G13 反向断言：口径收窄 ≠ 永不暂停
+    # ============================================================
+    # 没有这条，G12 可以被"干脆不判额度"这种错误改法蒙过去。
+    fake.usages.append(
+        {"case_id": None, "seq": None, "model": MODEL,
+         "input_tokens": 800_000, "output_tokens": 0,
+         "amount": 0.0, "created_at": datetime.now()}
+    )
+    status = await cost_gate.evaluate()
+    check("G13 当前模型自己用超了照样暂停（quota_exhausted）",
+          status.paused and status.reason == cost_gate.GATE_QUOTA_EXHAUSTED,
+          f"实得 paused={status.paused} reason={status.reason} used={status.quota_used}")
+    check("G13 暂停说明里点名是哪个模型的额度用完了",
+          MODEL in status.message, status.message[:80])
 
     restore()
     print("-" * 72)

@@ -260,33 +260,148 @@ async def _log_changes(
 async def delete_goods(
     seller_id: str, goods_id: int, *, actor: str = repo.ACTOR_HUMAN
 ) -> dict[str, Any]:
-    """删除商品：级联清理图片行与对象存储文件。
+    """删除商品 → **移入回收站**（软删除）。
 
-    顺序刻意如此 —— **先删库、再删文件**。若反过来（先删文件、删库失败），
-    就会出现"商品还在、图全没了"；而先删库最多留下孤儿文件，不破坏一致性。
+    为什么改成软删：AI 可以代卖家执行删除，而删除是**不可逆**的。
+    移入回收站后，"AI 误删"从"数据没了"变成"还能捞回来"（默认保留 7 天）。
+
+    ⚠️ **只打 `deleted_at`、不动 `status`** —— 恢复时原状态（已上架/草稿）自动回来，
+       不需要另存一份快照。
+    ⚠️ 图片**保留**（恢复要用）；只有彻底删除才清理文件。
     """
     goods = await repo.get_goods(goods_id, seller_id)
     if goods is None:
         raise GoodsError("goods_not_found", f"商品不存在：{goods_id}", 404)
 
-    media_keys = await repo.list_media_keys(goods_id)
-    await repo.delete_media_by_goods(goods_id)
-    deleted = await repo.delete_goods(goods_id, seller_id)
-    if not deleted:
-        raise GoodsError("goods_not_found", f"商品不存在或已被删除：{goods_id}", 404)
+    media_count = len(await repo.list_media_keys(goods_id))
+    if not await repo.soft_delete(goods_id, seller_id):
+        raise GoodsError("goods_not_found", f"商品不存在或已在回收站：{goods_id}", 404)
 
-    removed_files = await _purge_files(media_keys)
-
+    days = settings.goods_trash_days
     await repo.insert_operation(
         actor=actor,
         action="delete_goods",
         target_id=str(goods.get("goods_no") or goods_id),
-        summary=f"删除商品「{goods.get('title')}」（¥{goods.get('price')}）及 {len(media_keys)} 张图片",
-        before={"title": goods.get("title"), "price": goods.get("price"), "media": len(media_keys)},
-        undoable=False,   # 删除不可撤销（将来加回收站后改为软删除）
+        summary=(f"删除商品「{goods.get('title')}」（¥{goods.get('price')}）→ 移入回收站"
+                 + (f"，{days} 天内可恢复" if days > 0 else "，可恢复")),
+        before={"title": goods.get("title"), "price": goods.get("price"), "media": media_count},
+        undoable=False,   # 撤销已由"从回收站恢复"取代
         seller_id=seller_id,
     )
-    return {"goods_id": goods_id, "media_removed": len(media_keys), "files_removed": removed_files}
+    return {
+        "goods_id": goods_id,
+        "goods_no": goods.get("goods_no"),
+        "trashed": True,
+        "media_removed": 0,        # 兼容旧字段：软删不再删图片
+        "media_kept": media_count,
+        "restore_days": days,
+    }
+
+
+# ============================================================
+# 回收站
+# ============================================================
+
+
+async def list_trash(seller_id: str) -> list[dict[str, Any]]:
+    """回收站列表（附「剩余可恢复天数」）。"""
+    days = settings.goods_trash_days
+    rows = await repo.list_trash(seller_id)
+    out: list[dict[str, Any]] = []
+    for goods in rows:
+        since = goods.pop("days_since", None)
+        left = max(0, days - int(since)) if (days > 0 and since is not None) else None
+        goods["days_left"] = left
+        out.append(goods)
+    return out
+
+
+async def restore_goods(
+    seller_id: str, goods_id: int, *, actor: str = repo.ACTOR_HUMAN
+) -> dict[str, Any]:
+    """从回收站恢复（原状态一并回来）。"""
+    goods = await repo.get_goods(goods_id, seller_id, include_deleted=True)
+    if goods is None or not goods.get("deleted_at"):
+        raise GoodsError("goods_not_found", "回收站里没有该商品", 404)
+    if not await repo.restore(goods_id, seller_id):
+        raise GoodsError("restore_failed", "恢复失败：该商品可能已被彻底删除", 409)
+
+    await repo.insert_operation(
+        actor=actor,
+        action="restore_goods",
+        target_id=str(goods.get("goods_no") or goods_id),
+        summary=f"从回收站恢复商品「{goods.get('title')}」",
+        undoable=False,
+        seller_id=seller_id,
+    )
+    return {"goods_id": goods_id, "goods_no": goods.get("goods_no"), "status": goods.get("status")}
+
+
+async def purge_goods(
+    seller_id: str, goods_id: int, *, actor: str = repo.ACTOR_HUMAN
+) -> dict[str, Any]:
+    """**彻底删除**（不可恢复）：商品行 + media 行 + 对象存储文件。"""
+    goods = await repo.get_goods(goods_id, seller_id, include_deleted=True)
+    if goods is None or not goods.get("deleted_at"):
+        raise GoodsError("goods_not_found", "回收站里没有该商品（彻底删除只对回收站内的商品生效）", 404)
+
+    keys = await repo.list_media_keys(goods_id)
+    await repo.delete_media_by_goods(goods_id)
+    if not await repo.purge_hard(goods_id, seller_id):
+        raise GoodsError("purge_failed", "彻底删除失败，请重试", 409)
+    removed = await _purge_files(keys)
+
+    await repo.insert_operation(
+        actor=actor,
+        action="purge_goods",
+        target_id=str(goods.get("goods_no") or goods_id),
+        summary=f"彻底删除商品「{goods.get('title')}」及 {len(keys)} 张图片（不可恢复）",
+        undoable=False,
+        seller_id=seller_id,
+    )
+    return {"goods_id": goods_id, "files_removed": removed, "media_removed": len(keys)}
+
+
+async def cleanup_expired_trash() -> int:
+    """清理回收站里**超过保留期**的商品（启动时 + 打开回收站时调用）。
+
+    到期即**彻底删除**：商品行 + media 行 + 对象存储文件，并记一条 `system` 日志。
+    这是"限时保留"的兜底 —— 没有它，回收站会无限增长。
+    """
+    days = settings.goods_trash_days
+    if days <= 0:
+        return 0
+    try:
+        expired = await repo.list_expired(days)
+    except Exception as exc:  # noqa: BLE001 —— 清理是旁路，失败不阻断
+        logger.warning("查询过期回收站商品失败（忽略）：%s", exc)
+        return 0
+
+    cleaned = 0
+    for goods in expired:
+        seller_id = str(goods.get("seller_id") or "")
+        goods_id = int(goods["id"])
+        keys = await repo.list_media_keys(goods_id)
+        try:
+            await repo.delete_media_by_goods(goods_id)
+            if not await repo.purge_hard(goods_id, seller_id):
+                continue
+            await _purge_files(keys)
+            await repo.insert_operation(
+                actor=repo.ACTOR_SYSTEM,
+                action="purge_goods",
+                target_id=str(goods.get("goods_no") or goods_id),
+                summary=f"回收站到期，彻底删除商品「{goods.get('title')}」及 {len(keys)} 张图片",
+                undoable=False,
+                seller_id=seller_id,
+            )
+            cleaned += 1
+        except Exception as exc:  # noqa: BLE001 —— 单个失败不影响其余
+            logger.warning("清理过期商品 %s 失败：%s", goods_id, exc)
+
+    if cleaned:
+        logger.warning("回收站到期清理：彻底删除 %d 个商品", cleaned)
+    return cleaned
 
 
 async def _purge_files(keys: list[str]) -> int:
@@ -444,17 +559,28 @@ async def _find_by_no(seller_id: str, goods_no: str) -> dict[str, Any] | None:
     return await find_by_no(seller_id, goods_no)
 
 
-async def find_by_no(seller_id: str, goods_no: str) -> dict[str, Any] | None:
+async def find_by_no(
+    seller_id: str, goods_no: str, *, include_deleted: bool = False
+) -> dict[str, Any] | None:
     """按商品编号查商品**详情（含图片列表）**；不存在返回 `None`。
 
     公开此函数是因为**助手工具层**需要按编号定位商品（模型只认编号，不认自增 id）。
 
     统一返回详情：无论走 id 还是编号命中，最终都取一次 `get_goods` ——
     否则"返回的行不含 media"会让调用方（如确认卡的影响预览）拿到不完整数据。
+
+    `include_deleted=True` 时**只在回收站里找**（用于"恢复误删"）。
     """
     key = str(goods_no or "").strip()
     if not key:
         return None
+
+    if include_deleted:
+        for row in await repo.list_trash(seller_id, limit=200):
+            if str(row.get("goods_no")) == key:
+                return await repo.get_goods(int(row["id"]), seller_id, include_deleted=True)
+        return None
+
     if key.isdigit():
         found = await repo.get_goods(int(key), seller_id)
         if found is not None:

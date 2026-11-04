@@ -231,10 +231,48 @@ async def run_storage_contract() -> None:
               store.url_for("/202610/demo.jpg") == "/api/seller/uploads/202610/demo.jpg")
 
 
+def run_real_shape_contract() -> None:
+    """真实数据形态：订单行（一单多商品）与商品快照。
+
+    这两块是"接真机"的前置：**模型装不下真实数据，接上了也会丢字段**。
+    """
+    import inspect
+
+    from app.models import GoodsSnapshot, OrderItem, OrderSnapshot
+    from app.ports.datasource import GoodsSource
+
+    print("\n【真实数据形态】")
+
+    # --- 订单行：一单多商品 ---
+    snap = OrderSnapshot(order_id="X", items=[
+        OrderItem(goods_no="G-0001", quantity=2, unit_price_cent=7900, paid_cent=15800),
+        OrderItem(goods_no="G-0004", quantity=1, unit_price_cent=1000, paid_cent=1000),
+    ])
+    check("R1 订单能装多行（一单多商品）", len(snap.items) == 2, str(len(snap.items)))
+    check("R2 行金额用整数分（避免浮点误差）", snap.items[0].paid_cent == 15800)
+    check("R3 **向后兼容**：不给 items 也不报错（现有判定链零改动）",
+          OrderSnapshot(order_id="Y").items == [])
+
+    # --- 商品快照 ---
+    g = GoodsSnapshot(goods_no="G-0001", title="榨汁杯", price_cent=9900, stock=3)
+    check("R4 商品快照金额为分", g.price_cent == 9900, str(g.price_cent))
+    check("R5 goods_no 是同步幂等键（必填）", g.goods_no == "G-0001")
+
+    # --- 端口形状：只读 + 支持增量 ---
+    params = inspect.signature(GoodsSource.list_goods).parameters
+    check("R6 商品列表支持增量同步参数 updated_since", "updated_since" in params,
+          str(list(params)))
+    methods = {m for m in dir(GoodsSource) if not m.startswith("_")}
+    forbidden = {"update_goods", "set_price", "save", "write", "delete", "upsert"}
+    check("R7 商品源**只有读方法**（写回平台不在本端口职责内）",
+          not (methods & forbidden), str(sorted(methods)))
+
+
 async def main() -> int:
     run_mapping_contract()
     await run_datasource_contract()
     await run_storage_contract()
+    run_real_shape_contract()
 
     total = len(_failures)
     print(f"\n结果：{'全部通过' if not total else f'{total} 项失败'}")

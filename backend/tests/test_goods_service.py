@@ -75,10 +75,12 @@ class FakeRepo:
         self.media[gid] = []
         return gid
 
-    async def get_goods(self, goods_id, seller_id):
+    async def get_goods(self, goods_id, seller_id, include_deleted=False):
         g = self.goods.get(goods_id)
         if g is None or g["seller_id"] != seller_id:
             return None
+        if g.get("deleted_at") and not include_deleted:
+            return None      # 回收站里的商品，正常查询看不到
         out = dict(g)
         out["media"] = [dict(m) for m in self.media.get(goods_id, [])]
         return out
@@ -93,8 +95,34 @@ class FakeRepo:
     async def delete_goods(self, goods_id, seller_id):
         return self.goods.pop(goods_id, None) is not None
 
+    async def soft_delete(self, goods_id, seller_id):
+        """软删除：只打 deleted_at，不动 status（与真实仓储一致）。"""
+        g = self.goods.get(goods_id)
+        if g is None or g.get("deleted_at"):
+            return False
+        g["deleted_at"] = "2026-10-19T00:00:00"
+        return True
+
+    async def list_trash(self, seller_id, limit=100):
+        return [g for g in self.goods.values()
+                if g["seller_id"] == seller_id and g.get("deleted_at")]
+
+    async def restore(self, goods_id, seller_id):
+        g = self.goods.get(goods_id)
+        if g is None or not g.get("deleted_at"):
+            return False
+        g["deleted_at"] = None
+        return True
+
+    async def purge_hard(self, goods_id, seller_id):
+        g = self.goods.get(goods_id)
+        if g is None or not g.get("deleted_at"):
+            return False
+        return self.goods.pop(goods_id, None) is not None
+
     async def list_goods(self, seller_id, *, scope="all", q="", status="", low_stock_only=False, limit=200):
-        rows = [g for g in self.goods.values() if g["seller_id"] == seller_id]
+        rows = [g for g in self.goods.values()
+                if g["seller_id"] == seller_id and not g.get("deleted_at")]
         if scope == "shelf":
             rows = [g for g in rows if g["status"] == self.STATUS_ON_SHELF]
         if status:
@@ -302,7 +330,9 @@ async def main() -> int:
     check("G6a 批量调价", bulk["done"] == [g["id"], g3["id"]] and fake.goods[g3["id"]]["price"] == 40.0,
           str(bulk))
     bad_bulk = await service.bulk_action(S, [g3["id"]], "delete")
-    check("G6b 批量删除", bad_bulk["done"] == [g3["id"]] and g3["id"] not in fake.goods, str(bad_bulk))
+    check("G6b 批量删除（软删：移入回收站，不是物理删）",
+          bad_bulk["done"] == [g3["id"]] and bool(fake.goods.get(g3["id"], {}).get("deleted_at")),
+          str(bad_bulk))
     try:
         await service.bulk_action(S, [g["id"]], "nuke")
         check("G6c 拒绝非法批量动作", False, "竟然通过了")
@@ -317,13 +347,46 @@ async def main() -> int:
     # ---- G7 删除 + 级联 ----
     await service.attach_media(S, g["id"], filename="c.png", data=b"z" * 10)
     keys_before = list(storage.objects.keys())
+    status_before = fake.goods[g["id"]]["status"]   # 删除**那一刻**的状态（中途上过架）
     res = await service.delete_goods(S, g["id"])
-    check("G7a 商品行已删", g["id"] not in fake.goods, str(res))
-    check("G7b 图片行已清", fake.media.get(g["id"]) == [], str(fake.media.get(g["id"])))
-    check("G7c 对象文件已清", all(k not in storage.objects for k in keys_before),
+    check("G7a 删除 → 移入回收站（商品行保留，打上 deleted_at）",
+          g["id"] in fake.goods and bool(fake.goods[g["id"]].get("deleted_at")), str(res))
+    check("G7b 图片行**保留**（恢复时要用）",
+          bool(fake.media.get(g["id"])), str(fake.media.get(g["id"])))
+    check("G7c 对象文件**保留**（只有彻底删除才清理）",
+          all(k in storage.objects for k in keys_before),
           f"{keys_before} vs {list(storage.objects.keys())}")
+    check("G7e 正常查询看不到回收站里的商品",
+          await service.find_by_no(S, str(g["goods_no"])) is None)
+    check("G7f 回收站里能找到它",
+          (await service.find_by_no(S, str(g["goods_no"]), include_deleted=True)) is not None)
     dlog = [l for l in fake.logs if l["action"] == "delete_goods"]
-    check("G7d 删除记为不可撤销", bool(dlog) and not dlog[-1]["undoable"])
+    check("G7d 删除留痕且写明可恢复",
+          bool(dlog) and "回收站" in dlog[-1]["summary"],
+          dlog[-1]["summary"] if dlog else "无删除日志")
+
+    # ---- G8 恢复 / 彻底删除（回收站的正反两面）----
+    restored = await service.restore_goods(S, g["id"])
+    check("G8a 从回收站恢复（删除前的状态一并回来）",
+          not fake.goods[g["id"]].get("deleted_at")
+          and fake.goods[g["id"]]["status"] == status_before,
+          f"恢复后={fake.goods[g['id']]['status']} 删除前={status_before}")
+    check("G8b 恢复后正常查询可见",
+          (await service.find_by_no(S, str(g["goods_no"]))) is not None)
+
+    await service.delete_goods(S, g["id"])
+    purged = await service.purge_goods(S, g["id"])
+    check("G8c 彻底删除：商品行消失", g["id"] not in fake.goods, str(purged))
+    check("G8d 彻底删除：图片行清空",
+          not fake.media.get(g["id"]), str(fake.media.get(g["id"])))
+    check("G8e 彻底删除：文件被清",
+          all(k not in storage.objects for k in keys_before), str(list(storage.objects.keys())))
+
+    try:
+        await service.purge_goods(S, g["id"])
+        check("G8f 不在回收站的商品不能被彻底删除", False, "竟然通过了")
+    except GoodsError:
+        check("G8f 不在回收站的商品不能被彻底删除", True)
 
     # ---- G9 概览 ----
     ov = await service.overview(S)

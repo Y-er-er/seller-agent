@@ -10,7 +10,9 @@
 数据来源：
 1. `config/demo_orders.yaml`（批量预置，启动时注入，见 `load_demo_orders`）；
 2. **按需合成**（见 `ensure_demo_order`）——买家界面开启「演示模式」后，任意订单号都能受理，
-   事实由订单号**确定性**派生（同一订单号恒得同一份事实，保证可复现）。
+   自动编造一组**贴近真实电商业务**的数据：平台订单号、商品标题/类目/单价、快递公司与运单号、
+   带时间与城市的物流轨迹、脱敏买家姓名/手机/收货地址、买家信用画像等。
+   全部由订单号**确定性**派生（同一订单号恒得同一份事实，保证可复现），并一律标注 `synthetic`。
 """
 
 from __future__ import annotations
@@ -104,15 +106,47 @@ def load_demo_orders() -> int:
 #   2. **不污染真实链路**：已接入真实业务 API 时**整体失效**（与 `load_demo_orders` 同口径）；
 #   3. **不覆盖既有事实**：订单已存在则原样返回，不重写（幂等）。
 
-#: 金额池：刻意跨 R1 金额闸门（¥300）与 R2/R4 小额线（¥50）三档，换个订单号即换一档
-_DEMO_AMOUNTS: tuple[float, ...] = (19.9, 35.0, 48.0, 68.0, 129.0, 259.0, 328.0, 899.0)
+#: 商品池（真实电商里存在的商品）：标题 / 类目 / 单价 / 关联演示商品编号。
+#: - 商品编号仍限定在演示商品 G-0001/2/3，保证「商品 × 售后」联动可查
+#:   （编号必须与库里实际演示商品一致，否则售后统计显示"无关联工单"）；
+#: - 单价刻意覆盖 <¥50 / ¥50~300 / ≥¥300 三档，配合数量 1~2，
+#:   保证金额闸门（R1 ¥300）与小额线（R2/R4 ¥50）都测得到。
+_DEMO_PRODUCTS: tuple[tuple[str, str, float, str], ...] = (
+    ("便携榨汁杯 350ml 家用果汁机", "家居日用", 69.0, "G-0001"),
+    ("护眼台灯 触控调光 学习办公", "家居日用", 259.0, "G-0001"),
+    ("电动牙刷 声波震动 智能定时", "个护清洁", 199.0, "G-0001"),
+    ("快充数据线 2米 Type-C 编织", "数码配件", 29.9, "G-0002"),
+    ("蓝牙耳机 Pro2 主动降噪 入耳式", "数码配件", 129.0, "G-0002"),
+    ("手机壳 全包防摔 透明软壳", "数码配件", 19.9, "G-0002"),
+    ("智能手表 运动版 血氧监测", "数码配件", 899.0, "G-0002"),
+    ("硅胶折叠水壶 600ml 便携", "家居日用", 45.0, "G-0003"),
+    ("保温杯 500ml 316不锈钢", "家居日用", 89.0, "G-0003"),
+    ("空气炸锅 5L 无油电炸", "厨房电器", 359.0, "G-0003"),
+)
 
-#: 类目池
-_DEMO_CATEGORIES: tuple[str, ...] = ("日用百货", "数码配件", "服饰鞋包", "家居日用", "食品饮料")
+#: 数量池：多数 1 件、少量 2 件（多件订单更接近真实购买）
+_DEMO_QTY: tuple[int, ...] = (1, 1, 1, 2)
 
-#: 商品编号池：合成夹具据此把订单挂到**演示商品**上 —— 这是「商品 × 售后联动」的演示桥。
-#: ⚠️ 编号必须与库里实际存在的演示商品一致，否则售后统计会显示"无关联工单"（无害，但看不到效果）。
-_DEMO_GOODS_NOS: tuple[str, ...] = ("G-0001", "G-0002", "G-0003")
+#: 快递公司池（真实存在的国内快递），决定运单号前缀与轨迹里的快递名
+_DEMO_COURIERS: tuple[str, ...] = ("顺丰速运", "中通快递", "圆通速递", "韵达快递", "申通快递", "邮政EMS")
+
+#: 收货城市池（轨迹里的地理信息，真实城市名）
+_DEMO_CITIES: tuple[str, ...] = ("杭州", "上海", "广州", "深圳", "北京", "成都", "武汉", "南京", "苏州", "重庆")
+
+#: 收货地址池（城市 + 区县成对，避免"苏州市玄武区"这类城市与区县不匹配的失真）
+_DEMO_ADDRESSES: tuple[tuple[str, str], ...] = (
+    ("杭州", "西湖"), ("上海", "浦东"), ("广州", "天河"), ("深圳", "南山"), ("北京", "朝阳"),
+    ("成都", "武侯"), ("武汉", "洪山"), ("南京", "玄武"), ("苏州", "姑苏"), ("重庆", "渝北"),
+)
+
+#: 手机号段池（真实存在的国内手机号段，脱敏展示为 138****5678）
+_DEMO_PHONE_PREFIX: tuple[str, ...] = (
+    "138", "139", "150", "151", "152", "158", "159", "177", "186", "188", "189",
+)
+
+#: 买家姓氏 / 名池（脱敏展示，如 张*明）
+_DEMO_SURNAMES: tuple[str, ...] = ("张", "王", "李", "刘", "陈", "杨", "黄", "赵", "周", "吴")
+_DEMO_GIVEN: tuple[str, ...] = ("伟", "芳", "娜", "敏", "静", "磊", "军", "洋", "勇", "艳")
 
 #: 物流池：签收占多数（多数售后规则以"已签收"为前置），保留少量未签收/运输中用于边界验证
 _DEMO_LOGISTICS: tuple[str, ...] = ("signed", "signed", "signed", "not_signed", "in_transit")
@@ -137,12 +171,16 @@ _LOGISTICS_TEXT = {
     "not_shipped": "未发货",
 }
 
-_LOGI_TRACES = {
-    "signed": ["已揽收", "运输中", "派送中", "已签收"],
-    "not_signed": ["已揽收", "运输中", "派送中", "待签收"],
-    "in_transit": ["已揽收", "运输中"],
-    "not_shipped": [],
+#: 快递公司 → 运单号前缀（顺丰 SF / 圆通 YT / 中通 75 / 韵达 43 / 申通 77 / 邮政 EL）
+_COURIER_PREFIX = {
+    "顺丰速运": "SF", "中通快递": "75", "圆通速递": "YT",
+    "韵达快递": "43", "申通快递": "77", "邮政EMS": "EL",
 }
+
+
+def _tracking_no(courier: str, digest: bytes) -> str:
+    """由快递公司前缀 + 摘要派生序列拼出运单号（如 SF1327...）。"""
+    return _COURIER_PREFIX.get(courier, "SF") + str(int.from_bytes(digest[20:24], "big")).zfill(12)[:12]
 
 
 def demo_active() -> bool:
@@ -156,21 +194,43 @@ def _pick(pool, digest: bytes, index: int):
 
 
 def build_demo_facts(order_id: str) -> dict[str, Any]:
-    """由订单号**确定性**派生一组演示事实。
+    """由订单号**确定性**派生一组**贴近真实电商业务**的演示事实。
 
     为什么用 sha256 而不是内置 `hash()`：内置哈希带进程随机种子，重启即变，
     会让"同一订单号同结论"这条项目铁律失效。
+    为什么本函数不含绝对时间：它只产出**与时间无关**的字段（轨迹相对偏移、日期前缀用固定值），
+    保证 D1「同一订单号恒得同一份事实」；绝对时间在 `ensure_demo_order` 落库时再补。
     """
     digest = hashlib.sha256(order_id.encode("utf-8")).digest()
+    title, category, unit_price, goods_no = _pick(_DEMO_PRODUCTS, digest, 9)
+    qty = int(_pick(_DEMO_QTY, digest, 10))
+    courier = _pick(_DEMO_COURIERS, digest, 11)
+    from_city = _pick(_DEMO_CITIES, digest, 12)
+    dest_city, district = _pick(_DEMO_ADDRESSES, digest, 13)
+    surname = _pick(_DEMO_SURNAMES, digest, 14)
+    given = _pick(_DEMO_GIVEN, digest, 15)
+    phone_prefix = _pick(_DEMO_PHONE_PREFIX, digest, 16)
     return {
         "order_id": order_id,
-        "item_category": _pick(_DEMO_CATEGORIES, digest, 1),
-        "goods_no": _pick(_DEMO_GOODS_NOS, digest, 7),
-        "pay_amount": float(_pick(_DEMO_AMOUNTS, digest, 0)),
+        # 平台订单号：E + 摘要派生的 18 位长数字（贴近真实电商的长数字单号）
+        "order_no": "E" + str(int.from_bytes(digest[8:16], "big")).zfill(18),
+        "item_title": title,
+        "item_category": category,
+        "goods_no": goods_no,
+        "unit_price": float(unit_price),
+        "quantity": qty,
+        "pay_amount": round(unit_price * qty, 2),
         "logistics_status": _pick(_DEMO_LOGISTICS, digest, 2),
         "signed_days": int(_pick(_DEMO_SIGNED_DAYS, digest, 3)),
+        "courier": courier,
+        "tracking_no": _tracking_no(courier, digest),
+        "from_city": from_city,
+        "dest_city": dest_city,
         "profile": {
             "buyer_id": "DEMO-" + digest[:4].hex().upper(),
+            "buyer_name": surname + "*" + given,  # 脱敏：张*明
+            "buyer_phone": phone_prefix + "****" + str(int.from_bytes(digest[18:20], "big")).zfill(4)[:4],
+            "buyer_address": dest_city + "市" + district + "区（演示地址，已脱敏）",
             "buyer_credit_score": int(_pick(_DEMO_CREDIT, digest, 4)),
             "buyer_refund_rate_90d": float(_pick(_DEMO_REFUND_RATE, digest, 5)),
             "refund_count_90d": int(_pick(_DEMO_REFUND_COUNT, digest, 6)),
@@ -178,17 +238,54 @@ def build_demo_facts(order_id: str) -> dict[str, Any]:
     }
 
 
-def _order_summary(facts: dict[str, Any]) -> dict[str, Any]:
+def _render_traces(facts: dict[str, Any], status: str, anchor: datetime) -> list[str]:
+    """把事实渲染成**带绝对时间 / 城市 / 快递公司**的真实物流轨迹（展示用，也喂给智能体）。"""
+    courier = facts["courier"]
+    from_city = facts["from_city"]
+    dest_city = facts["dest_city"]
+
+    def at(**kw: int) -> str:
+        return (anchor - timedelta(**kw)).strftime("%Y-%m-%d %H:%M")
+
+    if status == "signed":
+        return [
+            f"{at(days=2)} {courier}已揽收，【{from_city}】",
+            f"{at(days=1)} 运输中，快件到达【{dest_city}转运中心】",
+            f"{at(hours=4)} 派送中，{courier}快递员正在派送",
+            f"{at(hours=0)} 已签收，签收人：本人",
+        ]
+    if status == "not_signed":
+        return [
+            f"{at(days=2)} {courier}已揽收，【{from_city}】",
+            f"{at(days=1)} 运输中，快件到达【{dest_city}转运中心】",
+            f"{at(hours=4)} 派送中，等待签收",
+        ]
+    return [
+        f"{at(days=1)} {courier}已揽收，【{from_city}】",
+        f"{at(hours=3)} 运输中，快件已离开【{from_city}转运中心】",
+    ]
+
+
+def _order_summary(facts: dict[str, Any], traces: list[str] | None = None) -> dict[str, Any]:
     """把**合成的**夹具事实裁成界面可直接展示的摘要（不含内部字段）。"""
     status = facts["logistics_status"]
     return {
         "order_id": facts["order_id"],
+        "order_no": facts.get("order_no", facts["order_id"]),
+        "item_title": facts.get("item_title", ""),
         "item_category": facts["item_category"],
         "goods_no": facts.get("goods_no", ""),
+        "unit_price": facts.get("unit_price"),
+        "quantity": facts.get("quantity"),
         "pay_amount": facts["pay_amount"],
         "logistics_status": status,
         "logistics_text": _LOGISTICS_TEXT.get(status, status),
         "signed_days": facts["signed_days"],
+        "courier": facts.get("courier", ""),
+        "tracking_no": facts.get("tracking_no", ""),
+        "from_city": facts.get("from_city", ""),
+        "dest_city": facts.get("dest_city", ""),
+        "traces": list(traces or []),
     }
 
 
@@ -209,12 +306,17 @@ def _summary_from_seeded(order_id: str) -> dict[str, Any] | None:
         signed_days = max(0, (datetime.now() - signed_at).days)
     return {
         "order_id": order_id,
+        "order_no": str(row.get("order_no") or ""),
+        "item_title": str(row.get("item_title") or ""),
         "item_category": str(row.get("item_category") or ""),
         "goods_no": str(row.get("goods_no") or ""),
         "pay_amount": float(row.get("pay_amount") or 0.0),
         "logistics_status": status,
         "logistics_text": _LOGISTICS_TEXT.get(status, status),
         "signed_days": signed_days,
+        "courier": str(row.get("courier") or ""),
+        "tracking_no": str(row.get("tracking_no") or ""),
+        "traces": [],
     }
 
 
@@ -280,14 +382,20 @@ def ensure_demo_order(order_id: str) -> dict[str, Any]:
 
     facts = build_demo_facts(order_id)
     status = facts["logistics_status"]
+    now = datetime.now()
     signed_at = (
-        datetime.now() - timedelta(days=facts["signed_days"]) if status == "signed" else None
+        now - timedelta(days=facts["signed_days"]) if status == "signed" else None
     )
+    traces = _render_traces(facts, status, signed_at or now)
 
     seed_order(
         order_id,
+        order_no=facts["order_no"],
+        item_title=facts["item_title"],
         item_category=facts["item_category"],
         goods_no=facts["goods_no"],
+        unit_price=facts["unit_price"],
+        quantity=facts["quantity"],
         pay_amount=facts["pay_amount"],
         logistics_status=status,
         signed_at=signed_at,
@@ -296,18 +404,21 @@ def ensure_demo_order(order_id: str) -> dict[str, Any]:
         order_id,
         logistics_status=status,
         signed_at=signed_at,
-        traces=list(_LOGI_TRACES.get(status, [])),
+        courier=facts["courier"],
+        tracking_no=facts["tracking_no"],
+        traces=traces,
     )
     seed_profile(order_id, **facts["profile"])
 
     logger.info(
-        "演示夹具已生成：order_id=%s 金额=%.2f 类目=%s 物流=%s 签收后=%s天",
-        order_id, facts["pay_amount"], facts["item_category"], status, facts["signed_days"],
+        "演示夹具已生成：order_id=%s 订单号=%s 商品=%s 金额=%.2f 物流=%s 签收后=%s天",
+        order_id, facts["order_no"], facts["item_title"],
+        facts["pay_amount"], status, facts["signed_days"],
     )
     return {
         "created": True,
         "synthetic": True,
         "reason": "generated",
-        "order": _order_summary(facts),
+        "order": _order_summary(facts, traces),
         "profile": facts["profile"],
     }

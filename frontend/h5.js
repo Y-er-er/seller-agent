@@ -163,17 +163,30 @@ async function consumeSSE(res, onEvent) {
 function renderOrderCard(order) {
   if (!order) return "";
   var rows = [
-    ["订单号", order.order_id],
-    ["商品", order.item_title || order.title],
+    ["平台订单号", order.order_no || order.order_id],
+    ["商品", order.item_title || order.item_category || order.title],
+    ["单价", order.unit_price != null ? ("¥" + order.unit_price) : ""],
+    ["数量", order.quantity != null ? ("x" + order.quantity) : ""],
     ["实付", order.pay_amount != null ? ("¥" + order.pay_amount) : ""],
-    ["状态", order.status_text || order.status],
+    ["快递", order.courier],
+    ["运单号", order.tracking_no],
+    ["状态", order.logistics_text || order.status_text || order.status],
   ].filter(function (r) { return r[1] !== undefined && r[1] !== null && r[1] !== ""; });
+  // 查询号（买家输入的键）仅在它与平台订单号不同时单独标注，便于重开同一会话
+  if (order.order_no && order.order_id && order.order_no !== order.order_id) {
+    rows.push(["查询号", order.order_id]);
+  }
   if (!rows.length) return "";
   var body = rows.map(function (r) {
     return '<div class="row"><span class="k">' + escapeHtml(r[0]) +
            '</span><span class="v">' + escapeHtml(r[1]) + "</span></div>";
   }).join("");
-  return '<div class="order-card"><div class="title">关联订单</div>' + body + "</div>";
+  var traces = (order.traces && order.traces.length)
+    ? '<ol class="trace">' + order.traces.map(function (t) {
+        return "<li>" + escapeHtml(t) + "</li>";
+      }).join("") + "</ol>"
+    : "";
+  return '<div class="order-card"><div class="title">关联订单</div>' + body + traces + "</div>";
 }
 
 function renderAmountCard(amount) {
@@ -191,14 +204,21 @@ function renderAmountCard(amount) {
 function renderDemoBadge(st) {
   if (!st.demoMode) return "";
   var info = st.demoInfo && st.demoInfo.order;
-  var detail = info
-    ? (escapeHtml(info.item_category || "") + " · ¥" + escapeHtml(info.pay_amount) +
-       " · " + escapeHtml(info.logistics_text || info.logistics_status || ""))
-    : "";
+  var parts = [];
+  if (info) {
+    if (info.item_title || info.item_category) parts.push(escapeHtml(info.item_title || info.item_category));
+    if (info.pay_amount != null) parts.push("¥" + escapeHtml(info.pay_amount));
+    if (info.courier) parts.push(escapeHtml(info.courier));
+    if (info.tracking_no) parts.push(escapeHtml(info.tracking_no));
+    if (info.logistics_text || info.logistics_status) {
+      parts.push(escapeHtml(info.logistics_text || info.logistics_status));
+    }
+  }
+  var detail = parts.length ? "<em>" + parts.join(" · ") + "</em>" : "";
   return '<div class="demo-badge">' +
       '<b>演示模式</b>' +
       "<span>订单事实为合成数据，非真实订单</span>" +
-      (detail ? "<em>" + detail + "</em>" : "") +
+      detail +
     "</div>";
 }
 
@@ -217,7 +237,7 @@ function renderStart(st) {
           'aria-checked="' + (on ? "true" : "false") + '"><i></i><span>演示模式</span></button>' +
         '<span class="sc-hint">' +
           (on
-            ? "任意订单号都按「订单存在」受理；事实由订单号确定性合成，换个号即换一组数据"
+            ? "任意订单号都按「订单存在」受理；自动编造订单号/商品/快递/物流轨迹/买家画像等真实电商数据，换个号即换一组"
             : "关闭时只受理真实 / 已预置的订单号") +
         "</span>" +
       "</div>" +

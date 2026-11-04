@@ -77,6 +77,19 @@ vm.runInContext(source, sandbox, { filename: "console.js" });
 
 /* ---------- ① 静态契约 ---------- */
 
+/* 对话区高度：这是**布局**问题，纯函数测不出来，只能钉样式契约。
+ * 曾真实出现：`.detail .body` 是 flex 列容器，子项默认可收缩；`#conv` 同时带
+ * `max-height` 与 `overflow-y` → `min-height:auto` 解析为 0 → 被压到 **24px**，
+ * 买家与智能体的历史对话只剩半行被裁的字（修复后 440px，实测）。
+ * 这条规则一旦被删/被覆盖，故障会**悄悄回来且测试全绿**，所以用静态断言钉住。 */
+const consoleCss = fs.readFileSync(path.join(FRONTEND_DIR, "console.css"), "utf8");
+check("对话区在 flex 列里不被压缩（.detail .body > *{flex:0 0 auto}）",
+  /\.detail\s+\.body\s*>\s*\*\s*\{[^}]*flex:\s*0\s+0\s+auto/.test(consoleCss),
+  "console.css 缺少 `.detail .body > *{flex:0 0 auto}` —— 对话区会被压扁");
+check("对话区有最小高度保障（不再只剩一条缝）",
+  /\.box#conv[^{]*\{[^}]*min-height/.test(consoleCss),
+  "console.css 的 `.box#conv` 缺少 min-height");
+
 function normalizePath(p) {
   return p.replace(/\$\{[^}]*\}/g, "{}").replace(/\{[^}]+\}/g, "{}").replace(/\/+$/, "");
 }

@@ -48,8 +48,13 @@ from app.config import settings
 from app.config_validation import log_warnings
 from app.goods.service import GoodsError
 from app.assistant.routes import router as assistant_router
+from app.knowledge.routes import router as knowledge_router
+from app.orders.routes import router as orders_router
+from app.service_chat.routes import buyer_router as service_buyer_router
+from app.service_chat.routes import seller_router as service_seller_router
 from app.seller.routes import goods_error_handler
 from app.seller.routes import router as seller_router
+from app.seller.auth_routes import router as auth_router
 from app.db import connect, get_decisions_by_request, get_stats, list_decisions, run_sync
 from app.demo_seed import backfill_case_goods, demo_active, ensure_demo_order, load_demo_orders
 from app.dev_seed import apply_scenario, real_api_configured, scenario_options, suggest_amount
@@ -132,12 +137,35 @@ async def lifespan(_app: FastAPI):
     log_warnings(logger)
     _log_runtime_mode()
     load_demo_orders()
+    # 工具注册表**在启动期就绪**：确认卡的措辞（会产生费用 / 不可撤销）与"工具是否存在"
+    # 都要查注册表 —— 若等到第一次对话才注册，启动后先点一张待确认卡会被误判成
+    # "工具已不存在"而直接把卡作废（不可恢复）。
+    from app.assistant import loop as assistant_loop
+
+    assistant_loop.ensure_tools_registered()
     # 历史工单补齐商品编号（商品 × 售后联动的关联键；幂等、失败不阻断启动）
     await backfill_case_goods()
     # 上次进程遗留的"执行中"任务标为中断 —— 后台协程随进程没了，不能假装还在跑
     from app.db.task_repo import mark_interrupted
 
     await mark_interrupted()
+
+    # 回收站到期清理（默认 7 天）：启动时跑一次，避免长期不打开回收站导致无限堆积
+    try:
+        from app.goods import service as goods_service
+
+        await goods_service.cleanup_expired_trash()
+    except Exception as exc:  # noqa: BLE001 —— 清理是旁路，失败不阻断启动
+        logger.warning("回收站到期清理失败（已忽略）：%s: %s", type(exc).__name__, exc)
+
+    # 登录：建表 + 首次启动创建初始账号（只在账号表为空时创建，**不改已有密码**）。
+    # 失败不阻断启动 —— 服务仍可跑其它域（但卖家控制台会停在登录窗，日志里有明确原因）。
+    try:
+        from app.seller import auth as seller_auth
+
+        await seller_auth.bootstrap()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("登录模块初始化失败（卖家控制台将无法登录）：%s: %s", type(exc).__name__, exc)
     yield
     await close_graph()
 
@@ -161,9 +189,16 @@ app.add_middleware(
 # 业务错误统一转成明确状态码 + 中文原因，不裸抛 500。
 # ------------------------------------------------------------
 app.add_exception_handler(GoodsError, goods_error_handler)
+# 登录：所有 `/api/seller/*` 都依赖它解析出的 seller_id（见 app/seller/deps.py）
+app.include_router(auth_router)
 app.include_router(seller_router)
 # AI 经营助手（阶段二）：工具注册表 + 待确认动作 + 对话循环
 app.include_router(assistant_router)
+# 知识库（RAG）：卖家上传资料 → 分块向量化 → 助手按需检索引用
+app.include_router(knowledge_router)
+app.include_router(orders_router)
+app.include_router(service_buyer_router)
+app.include_router(service_seller_router)
 
 # 查询类端点的分页上限，防止一次拉取过多（复核台/看板均为人工查阅场景）
 _MAX_PAGE_SIZE = 200
@@ -980,7 +1015,7 @@ _FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 
 _ROOT_HTML = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>商家售后智能体</title>
+<title>商铺经营Agent</title>
 <style>
  body{font:15px/1.9 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:640px;margin:64px auto;padding:0 22px;color:#1f2329}
  h1{font-size:20px;margin-bottom:4px} .ok{color:#15803d;font-size:13px}
@@ -989,13 +1024,14 @@ _ROOT_HTML = """<!DOCTYPE html>
  li{margin:8px 0} .muted{color:#8a9099;font-size:13px}
 </style></head>
 <body>
- <h1>卖家经营控制台 · 后端已启动</h1>
+ <h1>商铺经营Agent · 后端已启动</h1>
  <div class="ok">✓ 服务运行中（本页由后端提供）</div>
  <p>本服务只提供 <b>API</b>；界面是免构建静态页，直接从下面进入：</p>
  <ul>
-  <li><b>卖家控制台</b>（主界面）：<a href="/ui/seller.html">/ui/seller.html</a></li>
+  <li><b>商铺经营Agent</b>（主界面）：<a href="/ui/seller.html">/ui/seller.html</a></li>
   <li><b>售后指挥台</b>（控制台的「售后」页内嵌的就是它）：<a href="/ui/console.html">/ui/console.html</a></li>
   <li><b>买家 H5</b>：<a href="/ui/h5.html?order_id=DEMO001">/ui/h5.html?order_id=DEMO001</a></li>
+  <li><b>买家咨询（本地演示）</b>：<a href="/ui/consultation.html">/ui/consultation.html</a></li>
   <li><b>API 文档</b>：<a href="/docs">/docs</a>　|　<b>健康检查</b>：<a href="/api/health">/api/health</a></li>
  </ul>
  <p class="muted">也可直接双击 <code>frontend/seller.html</code>（file:// 打开，效果相同）。</p>
@@ -1008,5 +1044,16 @@ async def root_guide() -> HTMLResponse:
     return HTMLResponse(_ROOT_HTML)
 
 
+class _NoCacheStaticFiles(StaticFiles):
+    """静态文件一律 no-cache：免构建静态页迭代频繁，浏览器对 iframe 内嵌页的
+    启发式缓存会导致"改了样式页面不变"（本次 console.css 改版即踩中）。
+    no-cache 不是不缓存，而是每次使用前回源校验（配合 ETag 命中 304，开销很小）。"""
+
+    async def get_response(self, path: str, scope):  # type: ignore[override]
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 if _FRONTEND_DIR.is_dir():
-    app.mount("/ui", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="ui")
+    app.mount("/ui", _NoCacheStaticFiles(directory=str(_FRONTEND_DIR), html=True), name="ui")

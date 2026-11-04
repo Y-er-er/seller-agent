@@ -79,14 +79,17 @@ async def submit(
     target: str = "",
     action_id: int | None = None,
     seller_id: str = "default",
+    payload: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """登记任务并**后台执行**，立即返回任务行（`status=queued`）。
 
     调用方拿到 id 后即可回复用户"已在后台开始"，之后靠任务中心看进度。
+    `payload` 是**重建执行体所需的参数** —— 失败后重试要靠它（handler 存不下来）。
     """
     task_id = await repo.create_task(
-        kind, title, target=target, action_id=action_id, seller_id=seller_id
+        kind, title, target=target, action_id=action_id, seller_id=seller_id,
+        payload=payload,
     )
     job = asyncio.create_task(_run(task_id, handler, seller_id, kwargs))
     _RUNNING[task_id] = job
