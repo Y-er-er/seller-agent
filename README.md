@@ -292,8 +292,7 @@ cp .env.example .env
 
 其余开关均有可用默认值。完整说明见 `backend/.env.example` 的分节注释。
 
-> ⚠️ `.env` 已被 `.gitignore` 排除，**不要提交真实密钥**。
-> 若使用云对象存储，另需 `COS_SECRET_ID` / `COS_SECRET_KEY` / `COS_BUCKET`。
+> ⚠️ 若使用云对象存储，另需 `COS_SECRET_ID` / `COS_SECRET_KEY` / `COS_BUCKET`。
 
 ### 4. 初始化数据库
 
